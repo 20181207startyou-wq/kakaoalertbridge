@@ -23,7 +23,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         private const val PKG_GANPOOM_PARTNER = "com.classy.ganpoompartner"
         private const val PKG_GANPAN_STORE = "com.adone.ganpan"
         private const val PKG_KAKAOTALK = "com.kakao.talk"
-        private val TARGET_APP_PACKAGES = setOf(PKG_GANPOOM_PARTNER, PKG_GANPAN_STORE)
         private val KAKAO_CHANNEL_KEYWORDS = listOf("간판의품격", "간판스토어")
         // [임시] 이 3개 패키지에서 온 알림은 필터링 없이 전부 디버그 로그로 서버에 남김.
         // "상세 알림이 안드로이드에서 유실되는지" 진단용 - 원인 파악 끝나면 제거할 것.
@@ -77,9 +76,11 @@ class KakaoNotificationListenerService : NotificationListenerService() {
             effectiveBody
         }
 
+        // 간판의품격/간판스토어 자체 앱(com.classy.ganpoompartner/com.adone.ganpan) 알림은 구조화된
+        // 정보가 없는 요약 푸시일 뿐이고, 실제 상세 정보는 카카오톡 알림톡으로 온다. 두 경로를 모두
+        // 콜로 등록하면 같은 건이 중복 생성되므로, 콜 생성은 카카오톡 경유만 처리한다.
+        // (자체 앱 알림도 DEBUG_LOG_PACKAGES에는 남아있어 진단 로그에는 계속 기록됨)
         val source: String = when {
-            pkg == PKG_GANPOOM_PARTNER -> "간판의품격"
-            pkg == PKG_GANPAN_STORE -> "간판스토어"
             pkg == PKG_KAKAOTALK -> {
                 val matched = KAKAO_CHANNEL_KEYWORDS.firstOrNull { title.contains(it) }
                 if (matched == null) {

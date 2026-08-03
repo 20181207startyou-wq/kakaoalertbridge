@@ -1,12 +1,16 @@
 package com.mgad.kakaoalertbridge
 
 import android.app.Notification
+import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -26,9 +30,16 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         private val DEBUG_LOG_PACKAGES = setOf(PKG_GANPOOM_PARTNER, PKG_GANPAN_STORE, PKG_KAKAOTALK)
         private const val SERVER_URL = "https://app.mgad.kr/api/calls/receive"
         private const val DEBUG_LOG_URL = "https://app.mgad.kr/api/calls/debug-notification"
+        private const val HEARTBEAT_URL = "https://app.mgad.kr/api/calls/heartbeat"
+        private const val HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
+    private var heartbeatJob: Job? = null
+
+    private val deviceId: String by lazy {
+        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown-device"
+    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
@@ -161,13 +172,59 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         }
     }
 
+    // 진단 패널용 하트비트. 알림 리스너가 붙어있는 동안(=서비스가 살아있는 동안) 5분마다 전송.
+    // NotificationListenerService는 알림 접근 권한이 켜져있는 한 시스템이 계속 살려서 재바인딩해주므로
+    // 별도 WorkManager 없이도 배터리 최적화에 비교적 안정적으로 버틴다.
+    private fun sendHeartbeat(listenerConnected: Boolean) {
+        scope.launch {
+            try {
+                val url = URL(HEARTBEAT_URL)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json; utf-8")
+                conn.doOutput = true
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+
+                val payload = JSONObject().apply {
+                    put("device_id", deviceId)
+                    put("listener_connected", listenerConnected)
+                }
+
+                conn.outputStream.use { os ->
+                    os.write(payload.toString().toByteArray(Charsets.UTF_8))
+                }
+
+                val responseCode = conn.responseCode
+                Log.d(TAG, "하트비트 전송 결과: $responseCode")
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.e(TAG, "하트비트 전송 실패", e)
+            }
+        }
+    }
+
+    private fun startHeartbeatLoop() {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(HEARTBEAT_INTERVAL_MS)
+                sendHeartbeat(listenerConnected = true)
+            }
+        }
+    }
+
     override fun onListenerConnected() {
         super.onListenerConnected()
         Log.d(TAG, "알림 리스너 연결됨")
+        sendHeartbeat(listenerConnected = true)
+        startHeartbeatLoop()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         Log.d(TAG, "알림 리스너 연결 끊김")
+        heartbeatJob?.cancel()
+        sendHeartbeat(listenerConnected = false)
     }
 }

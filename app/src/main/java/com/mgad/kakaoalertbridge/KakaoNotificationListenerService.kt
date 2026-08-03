@@ -4,6 +4,7 @@ import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -38,14 +39,31 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: text
 
+        // 카카오톡 알림톡이 대화형(MessagingStyle) 알림으로 오면 실제 본문이 EXTRA_TEXT/EXTRA_BIG_TEXT가
+        // 아니라 EXTRA_MESSAGES(대화 메시지 목록) 또는 EXTRA_TEXT_LINES에 들어있을 수 있음.
+        // 여러 후보 중 가장 긴(=정보가 가장 많을) 것을 실제 본문으로 사용.
+        val messagingText = try {
+            NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(sbn.notification)
+                ?.messages
+                ?.mapNotNull { it.text?.toString() }
+                ?.joinToString("\n")
+                ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        val textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+            ?.joinToString("\n") { it.toString() } ?: ""
+        val effectiveBody = listOf(bigText, messagingText, textLines).maxByOrNull { it.length }
+            ?.takeIf { it.isNotBlank() } ?: bigText
+
         if (pkg in DEBUG_LOG_PACKAGES) {
-            sendDebugNotification(sbn, pkg, title, text, bigText)
+            sendDebugNotification(sbn, pkg, title, text, bigText, messagingText, textLines, effectiveBody)
         }
 
         val fullMessage = if (title.isNotBlank() && title !in KAKAO_CHANNEL_KEYWORDS) {
-            "$title\n$bigText"
+            "$title\n$effectiveBody"
         } else {
-            bigText
+            effectiveBody
         }
 
         val source: String = when {
@@ -71,7 +89,10 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         pkg: String,
         title: String,
         text: String,
-        bigText: String
+        bigText: String,
+        messagingText: String,
+        textLines: String,
+        effectiveBody: String
     ) {
         scope.launch {
             try {
@@ -92,6 +113,9 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                     put("title", title)
                     put("text", text)
                     put("big_text", bigText)
+                    put("messaging_text", messagingText)
+                    put("text_lines", textLines)
+                    put("effective_body", effectiveBody)
                     put("posted_at", sbn.postTime)
                 }
 

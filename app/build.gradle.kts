@@ -1,6 +1,28 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+fun gitCommitHash(): String = try {
+    val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    process.waitFor()
+    output.ifBlank { "unknown" }
+} catch (e: Exception) {
+    "unknown"
+}
+
+fun buildTimestamp(): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.KOREA)
+    sdf.timeZone = TimeZone.getTimeZone("Asia/Seoul")
+    return sdf.format(Date())
 }
 
 android {
@@ -15,6 +37,9 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+
+        buildConfigField("String", "GIT_COMMIT_HASH", "\"${gitCommitHash()}\"")
+        buildConfigField("String", "BUILD_TIMESTAMP", "\"${buildTimestamp()}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -32,6 +57,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

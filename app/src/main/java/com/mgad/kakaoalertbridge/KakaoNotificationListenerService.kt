@@ -17,7 +17,9 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         private const val TAG = "CallNotify"
         private const val PKG_GANPOOM_PARTNER = "com.classy.ganpoompartner"
         private const val PKG_GANPAN_STORE = "com.adone.ganpan"
-        private val TARGET_PACKAGES = setOf(PKG_GANPOOM_PARTNER, PKG_GANPAN_STORE)
+        private const val PKG_KAKAOTALK = "com.kakao.talk"
+        private val TARGET_APP_PACKAGES = setOf(PKG_GANPOOM_PARTNER, PKG_GANPAN_STORE)
+        private val KAKAO_CHANNEL_KEYWORDS = listOf("간판의품격", "간판스토어")
         private const val SERVER_URL = "https://app.mgad.kr/api/calls/receive"
     }
 
@@ -26,21 +28,31 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
 
-        if (sbn.packageName !in TARGET_PACKAGES) return
-
-        val source = when (sbn.packageName) {
-            PKG_GANPOOM_PARTNER -> "간판의품격"
-            PKG_GANPAN_STORE -> "간판스토어"
-            else -> sbn.packageName
-        }
-
+        val pkg = sbn.packageName
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: text
-        val fullMessage = if (title.isNotBlank()) "$title\n$bigText" else bigText
+        val fullMessage = if (title.isNotBlank() && title !in KAKAO_CHANNEL_KEYWORDS) {
+            "$title\n$bigText"
+        } else {
+            bigText
+        }
 
-        Log.d(TAG, "[$source] 알림 수신 - $fullMessage")
+        val source: String = when {
+            pkg == PKG_GANPOOM_PARTNER -> "간판의품격"
+            pkg == PKG_GANPAN_STORE -> "간판스토어"
+            pkg == PKG_KAKAOTALK -> {
+                val matched = KAKAO_CHANNEL_KEYWORDS.firstOrNull { title.contains(it) }
+                if (matched == null) {
+                    return
+                }
+                matched
+            }
+            else -> return
+        }
+
+        Log.d(TAG, "[$source] (pkg=$pkg) 알림 수신 - $fullMessage")
 
         sendToServer(source, fullMessage, sbn.postTime)
     }

@@ -66,8 +66,19 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         val effectiveBody = listOf(bigText, messagingText, textLines).maxByOrNull { it.length }
             ?.takeIf { it.isNotBlank() } ?: bigText
 
+        // [임시] 리치/커스텀 뷰(RemoteViews) 알림 진단용 - extras에 있는 모든 키와 스타일/커스텀뷰
+        // 존재 여부를 확인해서, 카카오톡 알림톡 상세 내용이 표준 텍스트 필드가 아니라 그림으로
+        // 그려지는 커스텀 뷰로만 존재하는지 판별.
+        val extrasKeys = try { extras.keySet().sorted().joinToString(",") } catch (e: Exception) { "" }
+        val template = extras.getString(Notification.EXTRA_TEMPLATE) ?: ""
+        val hasContentView = sbn.notification.contentView != null
+        val hasBigContentView = sbn.notification.bigContentView != null
+
         if (pkg in DEBUG_LOG_PACKAGES) {
-            sendDebugNotification(sbn, pkg, title, text, bigText, messagingText, textLines, effectiveBody)
+            sendDebugNotification(
+                sbn, pkg, title, text, bigText, messagingText, textLines, effectiveBody,
+                extrasKeys, template, hasContentView, hasBigContentView
+            )
         }
 
         val fullMessage = if (title.isNotBlank() && title !in KAKAO_CHANNEL_KEYWORDS) {
@@ -104,7 +115,11 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         bigText: String,
         messagingText: String,
         textLines: String,
-        effectiveBody: String
+        effectiveBody: String,
+        extrasKeys: String,
+        template: String,
+        hasContentView: Boolean,
+        hasBigContentView: Boolean
     ) {
         scope.launch {
             try {
@@ -128,6 +143,10 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                     put("messaging_text", messagingText)
                     put("text_lines", textLines)
                     put("effective_body", effectiveBody)
+                    put("extras_keys", extrasKeys)
+                    put("template", template)
+                    put("has_content_view", hasContentView)
+                    put("has_big_content_view", hasBigContentView)
                     put("posted_at", sbn.postTime)
                 }
 

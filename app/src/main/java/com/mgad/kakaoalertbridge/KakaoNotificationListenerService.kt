@@ -20,17 +20,15 @@ class KakaoNotificationListenerService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "CallNotify"
-        private const val PKG_GANPOOM_PARTNER = "com.classy.ganpoompartner"
-        private const val PKG_GANPAN_STORE = "com.adone.ganpan"
         private const val PKG_KAKAOTALK = "com.kakao.talk"
         private val KAKAO_CHANNEL_KEYWORDS = listOf("간판의품격", "간판스토어")
-        // [임시] 이 3개 패키지에서 온 알림은 필터링 없이 전부 디버그 로그로 서버에 남김.
-        // "상세 알림이 안드로이드에서 유실되는지" 진단용 - 원인 파악 끝나면 제거할 것.
-        private val DEBUG_LOG_PACKAGES = setOf(PKG_GANPOOM_PARTNER, PKG_GANPAN_STORE, PKG_KAKAOTALK)
         private const val SERVER_URL = "https://app.mgad.kr/api/calls/receive"
-        private const val DEBUG_LOG_URL = "https://app.mgad.kr/api/calls/debug-notification"
         private const val HEARTBEAT_URL = "https://app.mgad.kr/api/calls/heartbeat"
         private const val HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000L
+        // 서버의 /calls/receive, /calls/heartbeat 스팸성 데이터 주입 방지용 시크릿.
+        // 서버는 소프트 롤아웃 중이라 이 헤더가 없어도 일단 통과되지만(2026-08-07 기준
+        // 구버전 앱 호환), 값이 있는데 틀리면 거부한다. backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
+        private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -66,21 +64,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         val effectiveBody = listOf(bigText, messagingText, textLines).maxByOrNull { it.length }
             ?.takeIf { it.isNotBlank() } ?: bigText
 
-        // [임시] 리치/커스텀 뷰(RemoteViews) 알림 진단용 - extras에 있는 모든 키와 스타일/커스텀뷰
-        // 존재 여부를 확인해서, 카카오톡 알림톡 상세 내용이 표준 텍스트 필드가 아니라 그림으로
-        // 그려지는 커스텀 뷰로만 존재하는지 판별.
-        val extrasKeys = try { extras.keySet().sorted().joinToString(",") } catch (e: Exception) { "" }
-        val template = extras.getString(Notification.EXTRA_TEMPLATE) ?: ""
-        val hasContentView = sbn.notification.contentView != null
-        val hasBigContentView = sbn.notification.bigContentView != null
-
-        if (pkg in DEBUG_LOG_PACKAGES) {
-            sendDebugNotification(
-                sbn, pkg, title, text, bigText, messagingText, textLines, effectiveBody,
-                extrasKeys, template, hasContentView, hasBigContentView
-            )
-        }
-
         val fullMessage = if (title.isNotBlank() && title !in KAKAO_CHANNEL_KEYWORDS) {
             "$title\n$effectiveBody"
         } else {
@@ -90,7 +73,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         // 간판의품격/간판스토어 자체 앱(com.classy.ganpoompartner/com.adone.ganpan) 알림은 구조화된
         // 정보가 없는 요약 푸시일 뿐이고, 실제 상세 정보는 카카오톡 알림톡으로 온다. 두 경로를 모두
         // 콜로 등록하면 같은 건이 중복 생성되므로, 콜 생성은 카카오톡 경유만 처리한다.
-        // (자체 앱 알림도 DEBUG_LOG_PACKAGES에는 남아있어 진단 로그에는 계속 기록됨)
         val source: String = when {
             pkg == PKG_KAKAOTALK -> {
                 val matched = KAKAO_CHANNEL_KEYWORDS.firstOrNull { title.contains(it) }
@@ -107,61 +89,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         sendToServer(source, fullMessage, sbn.postTime)
     }
 
-    private fun sendDebugNotification(
-        sbn: StatusBarNotification,
-        pkg: String,
-        title: String,
-        text: String,
-        bigText: String,
-        messagingText: String,
-        textLines: String,
-        effectiveBody: String,
-        extrasKeys: String,
-        template: String,
-        hasContentView: Boolean,
-        hasBigContentView: Boolean
-    ) {
-        scope.launch {
-            try {
-                val url = URL(DEBUG_LOG_URL)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json; utf-8")
-                conn.doOutput = true
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-
-                val payload = JSONObject().apply {
-                    put("package", pkg)
-                    put("id", sbn.id)
-                    put("tag", sbn.tag)
-                    put("key", sbn.key)
-                    put("group_key", sbn.groupKey)
-                    put("title", title)
-                    put("text", text)
-                    put("big_text", bigText)
-                    put("messaging_text", messagingText)
-                    put("text_lines", textLines)
-                    put("effective_body", effectiveBody)
-                    put("extras_keys", extrasKeys)
-                    put("template", template)
-                    put("has_content_view", hasContentView)
-                    put("has_big_content_view", hasBigContentView)
-                    put("posted_at", sbn.postTime)
-                }
-
-                conn.outputStream.use { os ->
-                    os.write(payload.toString().toByteArray(Charsets.UTF_8))
-                }
-
-                conn.responseCode
-                conn.disconnect()
-            } catch (e: Exception) {
-                Log.e(TAG, "디버그 로그 전송 실패", e)
-            }
-        }
-    }
-
     private fun sendToServer(source: String, message: String, postTime: Long) {
         scope.launch {
             try {
@@ -169,6 +96,7 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json; utf-8")
+                conn.setRequestProperty("X-Bridge-Secret", BRIDGE_SECRET)
                 conn.doOutput = true
                 conn.connectTimeout = 10000
                 conn.readTimeout = 10000
@@ -202,6 +130,7 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json; utf-8")
+                conn.setRequestProperty("X-Bridge-Secret", BRIDGE_SECRET)
                 conn.doOutput = true
                 conn.connectTimeout = 10000
                 conn.readTimeout = 10000

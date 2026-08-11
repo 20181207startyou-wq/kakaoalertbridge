@@ -1,6 +1,14 @@
 package com.mgad.kakaoalertbridge
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -29,6 +37,9 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         // 서버는 소프트 롤아웃 중이라 이 헤더가 없어도 일단 통과되지만(2026-08-07 기준
         // 구버전 앱 호환), 값이 있는데 틀리면 거부한다. backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
         private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+
+        private const val FOREGROUND_CHANNEL_ID = "bridge_running"
+        private const val FOREGROUND_NOTIFICATION_ID = 1001
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -36,6 +47,65 @@ class KakaoNotificationListenerService : NotificationListenerService() {
 
     private val deviceId: String by lazy {
         Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown-device"
+    }
+
+    // 2026-08-11: 하트비트가 일반 코루틴 루프뿐이라 백그라운드에서 프로세스가 통째로 죽으면
+    // 5분 주기가 전혀 지켜지지 않고, 시스템이 알림 리스너를 다시 바인딩해줄 때까지(불규칙,
+    // 최대 4시간+ 관측됨) 하트비트가 끊기는 문제가 있었음. 포그라운드 서비스로 승격해
+    // 프로세스 우선순위를 높여 백그라운드 킬 가능성을 낮춘다.
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundNotification()
+    }
+
+    private fun startForegroundNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                FOREGROUND_CHANNEL_ID,
+                "콜 알림 감지 실행 상태",
+                NotificationManager.IMPORTANCE_MIN
+            ).apply {
+                description = "MG애드 콜 알림 브릿지가 백그라운드에서 정상 실행 중임을 표시합니다."
+                setShowBadge(false)
+            }
+            nm.createNotificationChannel(channel)
+        }
+
+        val openAppIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, FOREGROUND_CHANNEL_ID)
+            .setContentTitle("MG애드 콜 알림 감지 중")
+            .setContentText("백그라운드에서 정상 동작 중입니다.")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setOngoing(true)
+            .setContentIntent(openAppIntent)
+            .build()
+
+        try {
+            when {
+                Build.VERSION.SDK_INT >= 34 ->
+                    startForeground(FOREGROUND_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                    startForeground(FOREGROUND_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                else ->
+                    startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            // POST_NOTIFICATIONS 권한이 거부된 경우 등 - 알림만 안 보일 뿐 서비스 자체는
+            // 계속 동작해야 하므로 하트비트/알림 감지 로직을 막지 않고 로그만 남긴다.
+            Log.e(TAG, "포그라운드 알림 시작 실패", e)
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -121,8 +191,8 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     }
 
     // 진단 패널용 하트비트. 알림 리스너가 붙어있는 동안(=서비스가 살아있는 동안) 5분마다 전송.
-    // NotificationListenerService는 알림 접근 권한이 켜져있는 한 시스템이 계속 살려서 재바인딩해주므로
-    // 별도 WorkManager 없이도 배터리 최적화에 비교적 안정적으로 버틴다.
+    // 2026-08-11: 배터리 최적화 예외 상태를 함께 실어 보내, 원격(웹 진단 패널)에서도 예외가
+    // 다시 꺼졌는지(OS 업데이트나 사용자 실수로 재설정되는 경우 등) 확인할 수 있게 한다.
     private fun sendHeartbeat(listenerConnected: Boolean) {
         scope.launch {
             try {
@@ -138,6 +208,7 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                 val payload = JSONObject().apply {
                     put("device_id", deviceId)
                     put("listener_connected", listenerConnected)
+                    put("battery_optimization_ignored", isIgnoringBatteryOptimizations())
                 }
 
                 conn.outputStream.use { os ->

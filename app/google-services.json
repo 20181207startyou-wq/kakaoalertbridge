@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "809147841940",
+    "project_id": "mgad-call",
+    "storage_bucket": "mgad-call.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:809147841940:android:c49ee9820c4235ccad6381",
+        "android_client_info": {
+          "package_name": "com.mgad.kakaoalertbridge"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDkgdhXIKnRSGU7o8lLMpCpP2yCDs5upgE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -8,8 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -31,7 +29,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         private const val PKG_KAKAOTALK = "com.kakao.talk"
         private val KAKAO_CHANNEL_KEYWORDS = listOf("간판의품격", "간판스토어")
         private const val SERVER_URL = "https://app.mgad.kr/api/calls/receive"
-        private const val HEARTBEAT_URL = "https://app.mgad.kr/api/calls/heartbeat"
         private const val HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000L
         // 서버의 /calls/receive, /calls/heartbeat 스팸성 데이터 주입 방지용 시크릿.
         // 서버는 소프트 롤아웃 중이라 이 헤더가 없어도 일단 통과되지만(2026-08-07 기준
@@ -44,10 +41,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var heartbeatJob: Job? = null
-
-    private val deviceId: String by lazy {
-        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown-device"
-    }
 
     // 2026-08-11: 하트비트가 일반 코루틴 루프뿐이라 백그라운드에서 프로세스가 통째로 죽으면
     // 5분 주기가 전혀 지켜지지 않고, 시스템이 알림 리스너를 다시 바인딩해줄 때까지(불규칙,
@@ -101,11 +94,6 @@ class KakaoNotificationListenerService : NotificationListenerService() {
             // 계속 동작해야 하므로 하트비트/알림 감지 로직을 막지 않고 로그만 남긴다.
             Log.e(TAG, "포그라운드 알림 시작 실패", e)
         }
-    }
-
-    private fun isIgnoringBatteryOptimizations(): Boolean {
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        return pm.isIgnoringBatteryOptimizations(packageName)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -191,37 +179,9 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     }
 
     // 진단 패널용 하트비트. 알림 리스너가 붙어있는 동안(=서비스가 살아있는 동안) 5분마다 전송.
-    // 2026-08-11: 배터리 최적화 예외 상태를 함께 실어 보내, 원격(웹 진단 패널)에서도 예외가
-    // 다시 꺼졌는지(OS 업데이트나 사용자 실수로 재설정되는 경우 등) 확인할 수 있게 한다.
+    // 실제 전송 로직은 HeartbeatSender(FcmMessagingService의 웨이크 핑 핸들러와 공유)로 위임.
     private fun sendHeartbeat(listenerConnected: Boolean) {
-        scope.launch {
-            try {
-                val url = URL(HEARTBEAT_URL)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json; utf-8")
-                conn.setRequestProperty("X-Bridge-Secret", BRIDGE_SECRET)
-                conn.doOutput = true
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-
-                val payload = JSONObject().apply {
-                    put("device_id", deviceId)
-                    put("listener_connected", listenerConnected)
-                    put("battery_optimization_ignored", isIgnoringBatteryOptimizations())
-                }
-
-                conn.outputStream.use { os ->
-                    os.write(payload.toString().toByteArray(Charsets.UTF_8))
-                }
-
-                val responseCode = conn.responseCode
-                Log.d(TAG, "하트비트 전송 결과: $responseCode")
-                conn.disconnect()
-            } catch (e: Exception) {
-                Log.e(TAG, "하트비트 전송 실패", e)
-            }
-        }
+        HeartbeatSender.send(this, listenerConnected)
     }
 
     private fun startHeartbeatLoop() {

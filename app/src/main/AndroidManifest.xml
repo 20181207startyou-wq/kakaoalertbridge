@@ -45,6 +45,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="카카오톡 콜 알림 감지 브릿지 - 새 견적 요청 알림을 놓치지 않기 위해 지속 실행" />
         </service>
+
+        <!-- 하트비트 이중 안전장치: 서버의 무음 웨이크 핑을 받아 즉시 하트비트를 재전송 -->
+        <service
+            android:name=".FcmMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

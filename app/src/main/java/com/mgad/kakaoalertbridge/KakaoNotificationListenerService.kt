@@ -27,7 +27,10 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "CallNotify"
         private const val PKG_KAKAOTALK = "com.kakao.talk"
-        private val KAKAO_CHANNEL_KEYWORDS = listOf("간판의품격", "간판스토어")
+        // 업무시간 외 "상담참여" 자동확보 대상은 간판의품격뿐 - 간판스토어는 파트너스 앱
+        // 자동참여 버튼 자체가 없으므로 절대 트리거되면 안 됨(maybeTriggerAutoParticipate 참고).
+        private const val GANPAN_QUALITY_SOURCE = "간판의품격"
+        private val KAKAO_CHANNEL_KEYWORDS = listOf(GANPAN_QUALITY_SOURCE, "간판스토어")
         private const val SERVER_URL = "https://app.mgad.kr/api/calls/receive"
         private const val HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000L
         // 서버의 /calls/receive, /calls/heartbeat 스팸성 데이터 주입 방지용 시크릿.
@@ -175,7 +178,7 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                 Log.d(TAG, "서버 전송 결과: $responseCode - $responseBody")
                 conn.disconnect()
 
-                maybeTriggerAutoParticipate(message, responseCode, responseBody)
+                maybeTriggerAutoParticipate(source, message, responseCode, responseBody)
             } catch (e: Exception) {
                 Log.e(TAG, "서버 전송 실패", e)
             }
@@ -186,7 +189,13 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     // call_id를 들고 접근성 서비스를 트리거해 파트너스 앱의 "상담참여"를 자동으로 확보한다.
     // 업무시간 계산은 백엔드 is_business_hours()(KST 월~금 09~18시)와 동일하게 맞춰야
     // "업무시간인데 자동참여를 시도"하거나 "업무시간 외인데 자동참여를 안 하는" 불일치가 없다.
-    private fun maybeTriggerAutoParticipate(message: String, responseCode: Int, responseBody: String) {
+    //
+    // source(온 알림의 title 매칭 키워드, "간판의품격"/"간판스토어")로 먼저 플랫폼을 하드
+    // 게이트한다 - 메시지 본문에 "상담요청이 도착했어요"라는 문구가 우연히 들어있어도
+    // source가 간판의품격이 아니면 절대 트리거되지 않음. 당근비즈/숨고/크몽은 애초에
+    // KAKAO_CHANNEL_KEYWORDS에 없어 이 함수까지 오지도 않는다(onNotificationPosted 참고).
+    private fun maybeTriggerAutoParticipate(source: String, message: String, responseCode: Int, responseBody: String) {
+        if (source != GANPAN_QUALITY_SOURCE) return
         if (responseCode !in 200..299) return
         if ("상담요청이 도착했어요" !in message) return
         if (isBusinessHoursKst()) return

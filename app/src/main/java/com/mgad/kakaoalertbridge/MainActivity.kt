@@ -15,12 +15,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -62,8 +66,15 @@ class MainActivity : ComponentActivity() {
 fun StatusScreen() {
     var enabled by remember { mutableStateOf(false) }
     var batteryOptimizationIgnored by remember { mutableStateOf(false) }
+    var accessibilityEnabled by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    var autoParticipateEnabled by remember { mutableStateOf(AutoParticipateSettings.isEnabled(context)) }
+    var dryRunMode by remember { mutableStateOf(AutoParticipateSettings.isDryRun(context)) }
+    var partnersPackageName by remember { mutableStateOf(AutoParticipateSettings.getPartnersPackageName(context)) }
+    var tabButtonText by remember { mutableStateOf(AutoParticipateSettings.getTabButtonText(context)) }
+    var participateButtonText by remember { mutableStateOf(AutoParticipateSettings.getParticipateButtonText(context)) }
 
     fun checkStatus() {
         val enabledListeners = Settings.Secure.getString(
@@ -74,6 +85,14 @@ fun StatusScreen() {
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         batteryOptimizationIgnored = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+
+        val enabledAccessibilityServices = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: ""
+        accessibilityEnabled = enabledAccessibilityServices.contains(
+            "${context.packageName}/${context.packageName}.PartnersAutoParticipateService"
+        )
     }
 
     checkStatus()
@@ -125,6 +144,80 @@ fun StatusScreen() {
         ) {
             Text(if (batteryOptimizationIgnored) "배터리 최적화 예외 적용됨" else "배터리 최적화 예외 요청")
         }
+
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(20.dp))
+        Text(
+            text = if (accessibilityEnabled) {
+                "✅ 야간 자동참여 접근성 서비스 켜짐"
+            } else {
+                "❌ 야간 자동참여 접근성 서비스 꺼짐\n아래 버튼을 눌러서\n'MG애드 야간 상담참여 자동확보'를 켜주세요"
+            }
+        )
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(12.dp))
+        Button(onClick = {
+            settingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }) {
+            Text("접근성 서비스 설정 열기")
+        }
+
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(20.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("업무시간 외 자동참여 활성화")
+            Switch(
+                checked = autoParticipateEnabled,
+                onCheckedChange = {
+                    autoParticipateEnabled = it
+                    AutoParticipateSettings.setEnabled(context, it)
+                }
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("드라이런 모드(로그만, 실제 클릭 안 함)")
+            Switch(
+                checked = dryRunMode,
+                onCheckedChange = {
+                    dryRunMode = it
+                    AutoParticipateSettings.setDryRun(context, it)
+                }
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(12.dp))
+        OutlinedTextField(
+            value = partnersPackageName,
+            onValueChange = {
+                partnersPackageName = it
+                AutoParticipateSettings.setPartnersPackageName(context, it)
+            },
+            label = { Text("파트너스 앱 패키지명") },
+            singleLine = true,
+        )
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(6.dp))
+        OutlinedTextField(
+            value = tabButtonText,
+            onValueChange = {
+                tabButtonText = it
+                AutoParticipateSettings.setTabButtonText(context, it)
+            },
+            label = { Text("견적입찰 탭 텍스트") },
+            singleLine = true,
+        )
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(6.dp))
+        OutlinedTextField(
+            value = participateButtonText,
+            onValueChange = {
+                participateButtonText = it
+                AutoParticipateSettings.setParticipateButtonText(context, it)
+            },
+            label = { Text("상담참여 버튼 텍스트") },
+            singleLine = true,
+        )
 
         androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(20.dp))
         Text(

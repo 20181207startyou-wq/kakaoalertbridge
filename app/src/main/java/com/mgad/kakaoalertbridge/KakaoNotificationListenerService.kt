@@ -170,12 +170,46 @@ class KakaoNotificationListenerService : NotificationListenerService() {
                 }
 
                 val responseCode = conn.responseCode
-                Log.d(TAG, "서버 전송 결과: $responseCode")
+                val responseStream = if (responseCode in 200..299) conn.inputStream else conn.errorStream
+                val responseBody = responseStream?.bufferedReader()?.use { it.readText() } ?: ""
+                Log.d(TAG, "서버 전송 결과: $responseCode - $responseBody")
                 conn.disconnect()
+
+                maybeTriggerAutoParticipate(message, responseCode, responseBody)
             } catch (e: Exception) {
                 Log.e(TAG, "서버 전송 실패", e)
             }
         }
+    }
+
+    // 간판의품격 상세 알림("상담요청이 도착했어요")이 업무시간 외에 도착하면, 서버 응답에 실린
+    // call_id를 들고 접근성 서비스를 트리거해 파트너스 앱의 "상담참여"를 자동으로 확보한다.
+    // 업무시간 계산은 백엔드 is_business_hours()(KST 월~금 09~18시)와 동일하게 맞춰야
+    // "업무시간인데 자동참여를 시도"하거나 "업무시간 외인데 자동참여를 안 하는" 불일치가 없다.
+    private fun maybeTriggerAutoParticipate(message: String, responseCode: Int, responseBody: String) {
+        if (responseCode !in 200..299) return
+        if ("상담요청이 도착했어요" !in message) return
+        if (isBusinessHoursKst()) return
+
+        val callId = try {
+            JSONObject(responseBody).optInt("call_id", -1)
+        } catch (e: Exception) {
+            -1
+        }
+        if (callId <= 0) {
+            Log.w(TAG, "자동참여 트리거 스킵 - 응답에 call_id 없음: $responseBody")
+            return
+        }
+        PartnersAutoParticipateService.trigger(applicationContext, callId)
+    }
+
+    private fun isBusinessHoursKst(): Boolean {
+        val kst = java.util.TimeZone.getTimeZone("Asia/Seoul")
+        val cal = java.util.Calendar.getInstance(kst)
+        val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
+        if (dayOfWeek == java.util.Calendar.SATURDAY || dayOfWeek == java.util.Calendar.SUNDAY) return false
+        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        return hour in 9..17
     }
 
     // 진단 패널용 하트비트. 알림 리스너가 붙어있는 동안(=서비스가 살아있는 동안) 5분마다 전송.

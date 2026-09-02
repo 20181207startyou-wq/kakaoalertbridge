@@ -54,6 +54,21 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- 업무시간 외 "상담참여" 자동확보 - 파트너스 앱 UI 조작용 접근성 서비스.
+             기본값은 꺼짐(AutoParticipateSettings) - 사용자가 설정 화면에서 명시적으로 켜야 함. -->
+        <service
+            android:name=".PartnersAutoParticipateService"
+            android:label="MG애드 야간 상담참여 자동확보"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_participate_accessibility_config" />
+        </service>
     </application>
 
 </manifest>

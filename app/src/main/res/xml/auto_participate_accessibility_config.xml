@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 파트너스 앱 패키지명이 런타임 설정값(AutoParticipateSettings)이라 packageNames를
+     여기서 고정하지 않고 전체 패키지를 구독한 뒤 코드에서 대상 패키지인지 확인한다. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
+    android:description="@string/auto_participate_accessibility_description" />

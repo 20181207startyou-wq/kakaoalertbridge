@@ -29,9 +29,16 @@ class PartnersAutoParticipateService : AccessibilityService() {
         private var instance: WeakReference<PartnersAutoParticipateService>? = null
         private val processedCallIds = mutableSetOf<Int>()
 
-        fun trigger(context: android.content.Context, callId: Int) {
-            if (!AutoParticipateSettings.isEnabled(context)) {
-                Log.d(TAG, "자동참여 비활성 상태 - 스킵(call_id=$callId)")
+        // businessHours: 이 트리거가 업무시간 중에 일어난 것인지 - 업무시간 외/업무시간 중
+        // 토글이 각각 독립적이라, 어느 쪽 창(window)인지에 맞는 토글로 활성 여부를 판단한다.
+        fun trigger(context: android.content.Context, callId: Int, businessHours: Boolean = false) {
+            val enabledForThisWindow = if (businessHours) {
+                AutoParticipateSettings.isBusinessHoursEnabled(context)
+            } else {
+                AutoParticipateSettings.isEnabled(context)
+            }
+            if (!enabledForThisWindow) {
+                Log.d(TAG, "자동참여 비활성 상태(업무시간=$businessHours) - 스킵(call_id=$callId)")
                 return
             }
             if (!AutoParticipateSettings.isConfigured(context)) {

@@ -71,6 +71,7 @@ fun StatusScreen() {
     val context = androidx.compose.ui.platform.LocalContext.current
 
     var autoParticipateEnabled by remember { mutableStateOf(AutoParticipateSettings.isEnabled(context)) }
+    var businessHoursAutoParticipateEnabled by remember { mutableStateOf(AutoParticipateSettings.isBusinessHoursEnabled(context)) }
     var dryRunMode by remember { mutableStateOf(AutoParticipateSettings.isDryRun(context)) }
     var partnersPackageName by remember { mutableStateOf(AutoParticipateSettings.getPartnersPackageName(context)) }
     var tabButtonText by remember { mutableStateOf(AutoParticipateSettings.getTabButtonText(context)) }
@@ -171,6 +172,20 @@ fun StatusScreen() {
                 onCheckedChange = {
                     autoParticipateEnabled = it
                     AutoParticipateSettings.setEnabled(context, it)
+                }
+            )
+        }
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("업무시간 중 자동참여 활성화")
+            Switch(
+                checked = businessHoursAutoParticipateEnabled,
+                onCheckedChange = {
+                    businessHoursAutoParticipateEnabled = it
+                    AutoParticipateSettings.setBusinessHoursEnabled(context, it)
                 }
             )
         }

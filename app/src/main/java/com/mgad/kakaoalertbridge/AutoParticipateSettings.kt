@@ -9,6 +9,7 @@ import android.content.Context
 object AutoParticipateSettings {
     private const val PREFS_NAME = "auto_participate_settings"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_BUSINESS_HOURS_ENABLED = "business_hours_enabled"
     private const val KEY_DRY_RUN = "dry_run"
     private const val KEY_PACKAGE_NAME = "partners_package_name"
     private const val KEY_TAB_TEXT = "tab_button_text"
@@ -22,6 +23,16 @@ object AutoParticipateSettings {
 
     fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
     fun setEnabled(context: Context, value: Boolean) = prefs(context).edit().putBoolean(KEY_ENABLED, value).apply()
+
+    // 업무시간 중 자동참여 - 직원들이 바빠서 앱을 못 볼 때 마감(슬롯)을 놓치지 않기 위한
+    // 별도 스위치. 이게 켜져 있으면 업무시간에도 자동참여를 시도하지만, 그 이후 처리는
+    // 기존 콜 생성 로직(hold 없음, 평소와 동일한 즉시 알림)을 그대로 탄다 - 서버의
+    // is_business_hours() 조기 리턴이 hold 로직 자체를 업무시간엔 거치지 않게 해주므로
+    // 앱 쪽에서 추가로 분기할 필요가 없다. 기본값은 꺼짐(필요할 때만 켜서 사용).
+    fun isBusinessHoursEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_BUSINESS_HOURS_ENABLED, false)
+    fun setBusinessHoursEnabled(context: Context, value: Boolean) =
+        prefs(context).edit().putBoolean(KEY_BUSINESS_HOURS_ENABLED, value).apply()
 
     // 드라이런 기본 ON - 실제 클릭을 켜려면 사용자가 명시적으로 꺼야 함(안전 기본값).
     fun isDryRun(context: Context): Boolean = prefs(context).getBoolean(KEY_DRY_RUN, true)

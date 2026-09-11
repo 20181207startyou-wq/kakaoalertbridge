@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -185,8 +186,15 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         }
     }
 
-    // 간판의품격 상세 알림("상담요청이 도착했어요")이 도착하면, 서버 응답에 실린 call_id를
-    // 들고 접근성 서비스를 트리거해 파트너스 앱의 "상담참여"를 자동으로 확보한다.
+    // 간판의품격 상세 알림("상담요청이 도착했어요") 또는 "OOO님께서 사장님의 상담 참여를
+    // 기다리고 계세요!" 대기 리마인더가 도착하면, 서버 응답에 실린 call_ids를 들고 접근성
+    // 서비스를 트리거해 파트너스 앱의 "상담참여"를 자동으로 확보한다.
+    //
+    // 2026-09-11: 실제 사고(김정은님 건, 마감 09/14)로 리마인더 알림은 이 트리거가 전혀
+    // 시도조차 안 되고 있었음이 확인됨 - "상담요청이 도착했어요" 문구만 검사해서, 상세
+    // 알림 없이 리마인더만 오는(또는 카카오톡이 여러 건을 한 알림에 이어붙여 보내는) 경우를
+    // 완전히 놓치고 있었다. 백엔드(process_kakao_message)는 이미 이 리마인더를 콜로 만들고
+    // 있었으므로 트리거 조건만 넓히면 된다.
     //
     // 체크 순서(최우선 순위부터):
     // 1) 자동참여 제외 시간대(auto_participate_excluded) - 관리자가 설정한 요일+시간 구간
@@ -202,13 +210,16 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     // "업무시간인데 자동참여를 시도"하거나 "업무시간 외인데 자동참여를 안 하는" 불일치가 없다.
     //
     // source(온 알림의 title 매칭 키워드, "간판의품격"/"간판스토어")로 먼저 플랫폼을 하드
-    // 게이트한다 - 메시지 본문에 "상담요청이 도착했어요"라는 문구가 우연히 들어있어도
-    // source가 간판의품격이 아니면 절대 트리거되지 않음. 당근비즈/숨고/크몽은 애초에
-    // KAKAO_CHANNEL_KEYWORDS에 없어 이 함수까지 오지도 않는다(onNotificationPosted 참고).
+    // 게이트한다 - 메시지 본문에 트리거 문구가 우연히 들어있어도 source가 간판의품격이
+    // 아니면 절대 트리거되지 않음. 당근비즈/숨고/크몽은 애초에 KAKAO_CHANNEL_KEYWORDS에
+    // 없어 이 함수까지 오지도 않는다(onNotificationPosted 참고).
     private fun maybeTriggerAutoParticipate(source: String, message: String, responseCode: Int, responseBody: String) {
         if (source != GANPAN_QUALITY_SOURCE) return
         if (responseCode !in 200..299) return
-        if ("상담요청이 도착했어요" !in message) return
+        val isDetailNotification = "상담요청이 도착했어요" in message
+        // 백엔드 GANPAN_QUALITY_WAITING_PATTERN과 동일한 핵심 문구(이름/느낌표 제외)
+        val isWaitingReminder = "사장님의 상담 참여를 기다리고 계세요" in message
+        if (!isDetailNotification && !isWaitingReminder) return
 
         val response = try {
             JSONObject(responseBody)
@@ -224,12 +235,28 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         val businessHours = isBusinessHoursKst()
         if (businessHours && !AutoParticipateSettings.isBusinessHoursEnabled(applicationContext)) return
 
-        val callId = response?.optInt("call_id", -1) ?: -1
-        if (callId <= 0) {
-            Log.w(TAG, "자동참여 트리거 스킵 - 응답에 call_id 없음: $responseBody")
+        // 카카오톡이 미읽음 알림을 이어붙여 보내면 한 원문에 여러 고객의 리마인더가 섞여
+        // 오는 경우가 흔하다(백엔드가 이미 블록 단위로 쪼개 각각 별도 콜을 만들고 call_ids
+        // 배열로 전부 돌려줌) - call_id 하나만 보고 나머지를 버리면 첫 번째 고객만 자동참여
+        // 되고 나머지는 그대로 남는다(김정은님 건이 바로 이 케이스: 한 알림에 4명이 묶여
+        // 왔는데 4번째였음). 구버전 서버 호환을 위해 call_ids가 없으면 call_id 하나로 폴백.
+        val callIds = mutableListOf<Int>()
+        val callIdsArray: JSONArray? = response?.optJSONArray("call_ids")
+        if (callIdsArray != null) {
+            for (i in 0 until callIdsArray.length()) {
+                val id = callIdsArray.optInt(i, -1)
+                if (id > 0) callIds.add(id)
+            }
+        }
+        if (callIds.isEmpty()) {
+            val callId = response?.optInt("call_id", -1) ?: -1
+            if (callId > 0) callIds.add(callId)
+        }
+        if (callIds.isEmpty()) {
+            Log.w(TAG, "자동참여 트리거 스킵 - 응답에 call_id(s) 없음: $responseBody")
             return
         }
-        PartnersAutoParticipateService.trigger(applicationContext, callId, businessHours)
+        PartnersAutoParticipateService.trigger(applicationContext, callIds, businessHours)
     }
 
     private fun isBusinessHoursKst(): Boolean {

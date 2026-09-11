@@ -29,36 +29,65 @@ class PartnersAutoParticipateService : AccessibilityService() {
         private var instance: WeakReference<PartnersAutoParticipateService>? = null
         private val processedCallIds = mutableSetOf<Int>()
 
+        // 접근성 서비스는 한 번에 화면 하나만 조작할 수 있다. 카카오톡이 미읽음 알림을
+        // 이어붙여 보내면 한 알림에 여러 고객의 리마인더가 묶여 오는 게 흔해(김정은님 건
+        // 2026-09-11 참고) 트리거 한 번에 call_id가 여러 개 들어올 수 있는데, 이걸 병렬로
+        // 처리하면 여러 코루틴이 동시에 파트너스 앱을 열고 클릭하면서 서로 화면 상태를
+        // 덮어써 전부 실패하거나 엉뚱한 걸 클릭하는 사고가 난다. 그래서 큐에 쌓아 하나씩
+        // 순차 처리(이전 항목의 결과 보고까지 끝나야 다음 항목 시작)한다.
+        private val pendingQueue = ArrayDeque<Int>()
+        private var isProcessing = false
+
         // businessHours: 이 트리거가 업무시간 중에 일어난 것인지 - 업무시간 외/업무시간 중
         // 토글이 각각 독립적이라, 어느 쪽 창(window)인지에 맞는 토글로 활성 여부를 판단한다.
-        fun trigger(context: android.content.Context, callId: Int, businessHours: Boolean = false) {
+        fun trigger(context: android.content.Context, callIds: List<Int>, businessHours: Boolean = false) {
+            if (callIds.isEmpty()) return
             val enabledForThisWindow = if (businessHours) {
                 AutoParticipateSettings.isBusinessHoursEnabled(context)
             } else {
                 AutoParticipateSettings.isEnabled(context)
             }
             if (!enabledForThisWindow) {
-                Log.d(TAG, "자동참여 비활성 상태(업무시간=$businessHours) - 스킵(call_id=$callId)")
+                Log.d(TAG, "자동참여 비활성 상태(업무시간=$businessHours) - 스킵(call_ids=$callIds)")
                 return
             }
             if (!AutoParticipateSettings.isConfigured(context)) {
-                Log.w(TAG, "파트너스 앱 패키지명 미설정 - 스킵(call_id=$callId)")
+                Log.w(TAG, "파트너스 앱 패키지명 미설정 - 스킵(call_ids=$callIds)")
                 return
             }
-            synchronized(processedCallIds) {
-                if (!processedCallIds.add(callId)) {
-                    Log.d(TAG, "이미 처리(시도)된 call_id=$callId - 중복 트리거 스킵")
-                    return
-                }
+
+            val newIds = synchronized(processedCallIds) {
+                callIds.filter { processedCallIds.add(it) }
+            }
+            if (newIds.isEmpty()) {
+                Log.d(TAG, "이미 처리(시도)된 call_ids=$callIds - 중복 트리거 스킵")
+                return
+            }
+
+            synchronized(pendingQueue) { pendingQueue.addAll(newIds) }
+            processNextIfIdle(context)
+        }
+
+        private fun processNextIfIdle(context: android.content.Context) {
+            val nextId: Int
+            synchronized(pendingQueue) {
+                if (isProcessing) return
+                nextId = pendingQueue.removeFirstOrNull() ?: return
+                isProcessing = true
             }
             val dryRun = AutoParticipateSettings.isDryRun(context)
             val svc = instance?.get()
             if (svc == null) {
-                Log.w(TAG, "접근성 서비스 비활성(설정에서 켜지지 않음) - 자동참여 스킵(call_id=$callId)")
-                AutoParticipateResultSender.send(callId, success = false, errorMessage = "접근성 서비스가 켜져있지 않음", dryRun = dryRun)
+                Log.w(TAG, "접근성 서비스 비활성(설정에서 켜지지 않음) - 자동참여 스킵(call_id=$nextId)")
+                AutoParticipateResultSender.send(nextId, success = false, errorMessage = "접근성 서비스가 켜져있지 않음", dryRun = dryRun)
+                synchronized(pendingQueue) { isProcessing = false }
+                processNextIfIdle(context)
                 return
             }
-            svc.runParticipateFlow(callId, dryRun)
+            svc.runParticipateFlow(nextId, dryRun) {
+                synchronized(pendingQueue) { isProcessing = false }
+                processNextIfIdle(context)
+            }
         }
     }
 
@@ -83,7 +112,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
         Log.w(TAG, "접근성 서비스 인터럽트")
     }
 
-    private fun runParticipateFlow(callId: Int, dryRun: Boolean) {
+    private fun runParticipateFlow(callId: Int, dryRun: Boolean, onComplete: () -> Unit) {
         scope.launch {
             val packageName = AutoParticipateSettings.getPartnersPackageName(applicationContext)
             val tabText = AutoParticipateSettings.getTabButtonText(applicationContext)
@@ -138,6 +167,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 AutoParticipateResultSender.send(callId, success = false, errorMessage = "예외: ${e.message}", dryRun = dryRun)
             } finally {
                 performGlobalAction(GLOBAL_ACTION_HOME)
+                onComplete()
             }
         }
     }

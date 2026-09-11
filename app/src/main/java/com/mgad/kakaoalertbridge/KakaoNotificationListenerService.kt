@@ -187,10 +187,17 @@ class KakaoNotificationListenerService : NotificationListenerService() {
 
     // 간판의품격 상세 알림("상담요청이 도착했어요")이 도착하면, 서버 응답에 실린 call_id를
     // 들고 접근성 서비스를 트리거해 파트너스 앱의 "상담참여"를 자동으로 확보한다.
-    // 업무시간 외에는 항상 시도(AutoParticipateSettings.isEnabled 토글). 업무시간 중에는
-    // 별도 토글(AutoParticipateSettings.isBusinessHoursEnabled, 기본 꺼짐)이 켜져 있을 때만
-    // 시도한다 - 켜져 있어도 그 이후 처리는 서버의 is_business_hours() 조기 리턴 덕에 평소
-    // 업무시간 콜과 동일하게(hold 없이) 흘러가므로 여기서 추가로 분기할 필요는 없다.
+    //
+    // 체크 순서(최우선 순위부터):
+    // 1) 자동참여 제외 시간대(auto_participate_excluded) - 관리자가 설정한 요일+시간 구간
+    //    (예: 금요일 18:00~토요일 24:00)에 해당하면 업무시간 중/외 토글과 무관하게 무조건
+    //    스킵한다. 서버(is_within_exclusion_window)가 계산해 응답에 실어주므로 클라이언트가
+    //    직접 시간대 목록을 들고 있을 필요가 없다 - 콜 자체는 평소처럼 생성/보류되고 이
+    //    트리거만 건너뛴다(의도된 동작, 응대해봤자 이미 늦은 콜이라 자동참여도 포기).
+    // 2) 업무시간 외에는 항상 시도(AutoParticipateSettings.isEnabled 토글). 업무시간 중에는
+    //    별도 토글(AutoParticipateSettings.isBusinessHoursEnabled, 기본 꺼짐)이 켜져 있을 때만
+    //    시도한다 - 켜져 있어도 그 이후 처리는 서버의 is_business_hours() 조기 리턴 덕에 평소
+    //    업무시간 콜과 동일하게(hold 없이) 흘러가므로 여기서 추가로 분기할 필요는 없다.
     // 업무시간 계산은 백엔드 is_business_hours()(KST 월~금 09~18시)와 동일하게 맞춰야
     // "업무시간인데 자동참여를 시도"하거나 "업무시간 외인데 자동참여를 안 하는" 불일치가 없다.
     //
@@ -202,14 +209,22 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         if (source != GANPAN_QUALITY_SOURCE) return
         if (responseCode !in 200..299) return
         if ("상담요청이 도착했어요" !in message) return
+
+        val response = try {
+            JSONObject(responseBody)
+        } catch (e: Exception) {
+            null
+        }
+
+        if (response?.optBoolean("auto_participate_excluded", false) == true) {
+            Log.d(TAG, "자동참여 제외 시간대 - 트리거 스킵(콜 자체는 평소대로 생성/보류됨)")
+            return
+        }
+
         val businessHours = isBusinessHoursKst()
         if (businessHours && !AutoParticipateSettings.isBusinessHoursEnabled(applicationContext)) return
 
-        val callId = try {
-            JSONObject(responseBody).optInt("call_id", -1)
-        } catch (e: Exception) {
-            -1
-        }
+        val callId = response?.optInt("call_id", -1) ?: -1
         if (callId <= 0) {
             Log.w(TAG, "자동참여 트리거 스킵 - 응답에 call_id 없음: $responseBody")
             return

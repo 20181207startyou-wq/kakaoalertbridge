@@ -23,7 +23,12 @@ class PartnersAutoParticipateService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AutoParticipate"
-        private const val STEP_TIMEOUT_MS = 8000L
+        // 2026-09-15: 콜 684 실제 실패 로그로 8초가 부족한 사례를 확인함([2/8단계] 파트너스 앱
+        // 전면 전환 대기 시간 초과 - queries 수정으로 앱 실행 자체는 성공했는데 그 다음 이
+        // 단계에서 막힘). 오래 안 쓴 앱은 콜드 스타트가 느릴 수 있어 15초로 상향 - 이 상수를
+        // waitForNodeByText/waitForFirstClickableExcluding도 함께 쓰므로 전체 단계가 고르게
+        // 여유를 갖는다.
+        private const val STEP_TIMEOUT_MS = 15000L
         private const val POLL_INTERVAL_MS = 300L
 
         private var instance: WeakReference<PartnersAutoParticipateService>? = null
@@ -37,6 +42,9 @@ class PartnersAutoParticipateService : AccessibilityService() {
         // 순차 처리(이전 항목의 결과 보고까지 끝나야 다음 항목 시작)한다.
         private val pendingQueue = ArrayDeque<Int>()
         private var isProcessing = false
+        // processNextIfIdle은 suspend가 아닌 일반 함수(알림 콜백 체인에서 바로 호출됨)라
+        // AutoParticipateResultSender.send()(suspend)를 부르려면 별도 스코프가 필요하다.
+        private val companionScope = CoroutineScope(Dispatchers.IO)
 
         // businessHours: 이 트리거가 업무시간 중에 일어난 것인지 - 업무시간 외/업무시간 중
         // 토글이 각각 독립적이라, 어느 쪽 창(window)인지에 맞는 토글로 활성 여부를 판단한다.
@@ -79,7 +87,9 @@ class PartnersAutoParticipateService : AccessibilityService() {
             val svc = instance?.get()
             if (svc == null) {
                 Log.w(TAG, "접근성 서비스 비활성(설정에서 켜지지 않음) - 자동참여 스킵(call_id=$nextId)")
-                AutoParticipateResultSender.send(nextId, success = false, errorMessage = "접근성 서비스가 켜져있지 않음", dryRun = dryRun)
+                companionScope.launch {
+                    AutoParticipateResultSender.send(nextId, success = false, errorMessage = "접근성 서비스가 켜져있지 않음", dryRun = dryRun)
+                }
                 synchronized(pendingQueue) { isProcessing = false }
                 processNextIfIdle(context)
                 return
@@ -178,7 +188,11 @@ class PartnersAutoParticipateService : AccessibilityService() {
         }
     }
 
-    private fun fail(callId: Int, dryRun: Boolean, step: Int, totalSteps: Int, reason: String) {
+    // 2026-09-15: send()가 suspend로 바뀌면서 fail()도 suspend가 됨 - 호출부(runParticipateFlow의
+    // try 블록)가 전부 코루틴 안이라 그대로 호출 가능. 이제 fail()이 리턴해야 send()가 실제로
+    // 끝난(또는 재시도까지 소진한) 것이므로, finally의 performGlobalAction/onComplete가 보고
+    // 완료 전에 먼저 실행되는 일이 없다.
+    private suspend fun fail(callId: Int, dryRun: Boolean, step: Int, totalSteps: Int, reason: String) {
         val labeled = "[$step/${totalSteps}단계] $reason"
         Log.w(TAG, "자동참여 실패(call_id=$callId): $labeled")
         AutoParticipateResultSender.send(callId, success = false, errorMessage = labeled, dryRun = dryRun)

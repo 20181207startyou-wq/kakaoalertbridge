@@ -2,6 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 2026-09-15: 자동참여가 매번 "파트너스 앱을 찾을 수 없음"으로 실패한 진짜 원인.
+         패키지명(com.classy.ganpoompartner)은 실제로 맞았지만, Android 11+(targetSdk 30 이상)의
+         패키지 가시성 제한 때문에 <queries>로 명시 선언하지 않으면 실제로 설치돼 있어도
+         PackageManager.getLaunchIntentForPackage()가 조용히 null을 반환한다(설치 여부와 무관하게
+         "안 보이는" 상태) - 드라이런/실클릭, 대기시간과 무관하게 매번 같은 지점에서 실패했던 이유. -->
+    <queries>
+        <package android:name="com.classy.ganpoompartner" />
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

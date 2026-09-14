@@ -118,48 +118,54 @@ class PartnersAutoParticipateService : AccessibilityService() {
             val tabText = AutoParticipateSettings.getTabButtonText(applicationContext)
             val participateText = AutoParticipateSettings.getParticipateButtonText(applicationContext)
 
+            // 2026-09-15: 실패 알림에 "몇 번째 단계"인지가 안 남아 있어서, com.classy.ganpoompartner
+            // 패키지명 확인 등 엉뚱한 곳을 의심하며 시간을 썼던 문제 - 모든 실패 사유 앞에 단계
+            // 번호를 붙여, 다음에 또 실패해도 관리자 알림 문구만 보고 바로 어느 단계인지 알 수 있게 한다.
+            val totalSteps = 8
             try {
+                Log.d(TAG, "call_id=$callId 시작 - 패키지=$packageName")
+
                 val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                 if (launchIntent == null) {
-                    fail(callId, dryRun, "파트너스 앱(${packageName})을 찾을 수 없음")
+                    fail(callId, dryRun, 1, totalSteps, "파트너스 앱(${packageName})을 찾을 수 없음")
                     return@launch
                 }
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 startActivity(launchIntent)
 
                 if (!waitForPackageForeground(packageName)) {
-                    fail(callId, dryRun, "파트너스 앱 전면 전환 대기 시간 초과")
+                    fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
                     return@launch
                 }
 
                 val tabNode = waitForNodeByText(tabText)
-                    ?: run { fail(callId, dryRun, "\"$tabText\" 탭을 찾지 못함"); return@launch }
+                    ?: run { fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함"); return@launch }
                 if (!clickSelfOrClickableAncestor(tabNode)) {
-                    fail(callId, dryRun, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
+                    fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
                     return@launch
                 }
 
                 delay(1500)
 
                 val itemNode = waitForFirstClickableExcluding(setOf(tabText))
-                    ?: run { fail(callId, dryRun, "견적입찰 목록에서 열 항목을 찾지 못함"); return@launch }
+                    ?: run { fail(callId, dryRun, 5, totalSteps, "견적입찰 목록에서 열 항목을 찾지 못함"); return@launch }
                 if (!clickSelfOrClickableAncestor(itemNode)) {
-                    fail(callId, dryRun, "목록 항목 클릭 실패(클릭 가능한 노드 없음)")
+                    fail(callId, dryRun, 6, totalSteps, "목록 항목 클릭 실패(클릭 가능한 노드 없음)")
                     return@launch
                 }
 
                 val participateNode = waitForNodeByText(participateText)
-                    ?: run { fail(callId, dryRun, "\"$participateText\" 버튼을 찾지 못함"); return@launch }
+                    ?: run { fail(callId, dryRun, 7, totalSteps, "\"$participateText\" 버튼을 찾지 못함"); return@launch }
 
                 if (dryRun) {
-                    Log.d(TAG, "[드라이런] call_id=$callId \"$participateText\" 버튼 발견 - 실제 클릭 안 함")
+                    Log.d(TAG, "[드라이런] call_id=$callId \"$participateText\" 버튼 발견(8/$totalSteps 단계 진입 성공) - 실제 클릭 안 함")
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = true)
                 } else {
                     if (!clickSelfOrClickableAncestor(participateNode)) {
-                        fail(callId, dryRun, "\"$participateText\" 버튼 클릭 실패(클릭 가능한 노드 없음)")
+                        fail(callId, dryRun, 8, totalSteps, "\"$participateText\" 버튼 클릭 실패(클릭 가능한 노드 없음)")
                         return@launch
                     }
-                    Log.d(TAG, "call_id=$callId \"$participateText\" 클릭 완료")
+                    Log.d(TAG, "call_id=$callId \"$participateText\" 클릭 완료(8/$totalSteps 단계 전부 성공)")
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = false)
                 }
             } catch (e: Exception) {
@@ -172,9 +178,10 @@ class PartnersAutoParticipateService : AccessibilityService() {
         }
     }
 
-    private fun fail(callId: Int, dryRun: Boolean, reason: String) {
-        Log.w(TAG, "자동참여 실패(call_id=$callId): $reason")
-        AutoParticipateResultSender.send(callId, success = false, errorMessage = reason, dryRun = dryRun)
+    private fun fail(callId: Int, dryRun: Boolean, step: Int, totalSteps: Int, reason: String) {
+        val labeled = "[$step/${totalSteps}단계] $reason"
+        Log.w(TAG, "자동참여 실패(call_id=$callId): $labeled")
+        AutoParticipateResultSender.send(callId, success = false, errorMessage = labeled, dryRun = dryRun)
     }
 
     private suspend fun waitForPackageForeground(packageName: String): Boolean {

@@ -4,8 +4,17 @@ import android.content.Context
 
 // 업무시간 외 "상담참여" 자동확보 설정값. 이 환경엔 파트너스 앱이 설치된 실기기가 없어
 // 정확한 패키지명/버튼 텍스트를 미리 확인할 수 없었음 - 재배포 없이 현장에서 값을 튜닝할 수
-// 있도록 SharedPreferences로 뺐다. autoParticipateEnabled=false 또는 dryRunMode=true가
-// 기본값이라, 설정을 채우기 전까지는 아무 동작도 하지 않거나(비활성) 로그만 남긴다(드라이런).
+// 있도록 SharedPreferences로 뺐다. dryRunMode=true가 기본값이라, 실제 클릭까지는 항상
+// 사용자가 명시적으로 드라이런을 꺼야만 일어난다(안전 기본값).
+//
+// 2026-09-14: autoParticipateEnabled와 패키지명이 둘 다 빈 기본값(false/"")이었던 탓에,
+// 실기기에서 이 설정 화면을 한 번도 직접 열어 채워넣지 않으면 트리거가 서버 호출조차
+// 없이 완전히 조용히 종료되는 사고가 있었음(주말 콜 전수조사로 확인 - 배포 이래 실기기에서
+// 실제로 성공한 자동참여가 단 한 건도 없었음, DB에 남은 유일한 기록은 개발자가 리포트
+// API를 직접 호출한 테스트였음). 패키지명은 이미 다른 파일(KakaoNotificationListenerService.kt의
+// 간판의품격 자체 앱 필터링 로직)에서 com.classy.ganpoompartner로 확인된 값이라 기본값으로
+// 박아넣고, 마스터 토글도 기본 켜짐으로 바꿔 "설정 화면을 한 번도 안 열어도" 최소한
+// 드라이런으로는 동작이 시작되게 한다. 설정 화면에서 값을 바꾸면 당연히 그 값이 우선한다.
 object AutoParticipateSettings {
     private const val PREFS_NAME = "auto_participate_settings"
     private const val KEY_ENABLED = "enabled"
@@ -17,11 +26,12 @@ object AutoParticipateSettings {
 
     const val DEFAULT_TAB_TEXT = "견적입찰"
     const val DEFAULT_PARTICIPATE_TEXT = "상담참여"
+    const val DEFAULT_PACKAGE_NAME = "com.classy.ganpoompartner"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
+    fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, true)
     fun setEnabled(context: Context, value: Boolean) = prefs(context).edit().putBoolean(KEY_ENABLED, value).apply()
 
     // 업무시간 중 자동참여 - 직원들이 바빠서 앱을 못 볼 때 마감(슬롯)을 놓치지 않기 위한
@@ -38,7 +48,8 @@ object AutoParticipateSettings {
     fun isDryRun(context: Context): Boolean = prefs(context).getBoolean(KEY_DRY_RUN, true)
     fun setDryRun(context: Context, value: Boolean) = prefs(context).edit().putBoolean(KEY_DRY_RUN, value).apply()
 
-    fun getPartnersPackageName(context: Context): String = prefs(context).getString(KEY_PACKAGE_NAME, "") ?: ""
+    fun getPartnersPackageName(context: Context): String =
+        prefs(context).getString(KEY_PACKAGE_NAME, DEFAULT_PACKAGE_NAME) ?: DEFAULT_PACKAGE_NAME
     fun setPartnersPackageName(context: Context, value: String) =
         prefs(context).edit().putString(KEY_PACKAGE_NAME, value).apply()
 

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -127,6 +128,11 @@ class PartnersAutoParticipateService : AccessibilityService() {
 
     private fun runParticipateFlow(callId: Int, dryRun: Boolean, onComplete: () -> Unit) {
         scope.launch {
+            // 2026-09-16: 이 플로우(계측 대상: 여기부터 finally에서 RemoteLogSender.send()까지)
+            // 동안의 모든 RemoteFlowLogger.d/w/e 호출을 한 세션으로 모은다 - 큐가 한 번에
+            // 한 콜만 처리하므로 start()~snapshot() 사이 다른 플로우 로그가 섞일 일은 없다.
+            RemoteFlowLogger.start()
+            var succeeded = false
             val packageName = AutoParticipateSettings.getPartnersPackageName(applicationContext)
             val tabText = AutoParticipateSettings.getTabButtonText(applicationContext)
             val participateText = AutoParticipateSettings.getParticipateButtonText(applicationContext)
@@ -158,7 +164,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
             val flowStartElapsedMs = SystemClock.elapsedRealtime()
             try {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                Log.d(TAG, "call_id=$callId 시작 - 패키지=$packageName, 시작 시점 isInteractive=${powerManager.isInteractive}")
+                RemoteFlowLogger.d(TAG, "call_id=$callId 시작 - 패키지=$packageName, 시작 시점 isInteractive=${powerManager.isInteractive}")
 
                 // 대상 앱이 아예 없으면 화면을 깨울 필요도 없이 바로 실패 처리.
                 if (packageManager.getLaunchIntentForPackage(packageName) == null) {
@@ -176,17 +182,17 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 }
                 try {
                     startActivity(wakeIntent)
-                    Log.d(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 호출 완료(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms)")
+                    RemoteFlowLogger.d(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 호출 완료(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms)")
                 } catch (t: Throwable) {
-                    Log.e(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 중 예외", t)
+                    RemoteFlowLogger.e(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 중 예외", t)
                 }
 
                 if (!waitForPackageForeground(callId, flowStartElapsedMs, packageName)) {
-                    Log.w(TAG, "call_id=$callId 2단계 최종 실패 - 총 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, 종료 시점 isInteractive=${powerManager.isInteractive}, 최종 rootInActiveWindow.packageName=${rootInActiveWindow?.packageName}")
+                    RemoteFlowLogger.w(TAG, "call_id=$callId 2단계 최종 실패 - 총 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, 종료 시점 isInteractive=${powerManager.isInteractive}, 최종 rootInActiveWindow.packageName=${rootInActiveWindow?.packageName}")
                     fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
                     return@launch
                 }
-                Log.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
+                RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
                 val tabNode = waitForNodeByText(tabText)
                     ?: run { fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함"); return@launch }
@@ -208,21 +214,28 @@ class PartnersAutoParticipateService : AccessibilityService() {
                     ?: run { fail(callId, dryRun, 7, totalSteps, "\"$participateText\" 버튼을 찾지 못함"); return@launch }
 
                 if (dryRun) {
-                    Log.d(TAG, "[드라이런] call_id=$callId \"$participateText\" 버튼 발견(8/$totalSteps 단계 진입 성공) - 실제 클릭 안 함")
+                    RemoteFlowLogger.d(TAG, "[드라이런] call_id=$callId \"$participateText\" 버튼 발견(8/$totalSteps 단계 진입 성공) - 실제 클릭 안 함")
+                    succeeded = true
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = true)
                 } else {
                     if (!clickSelfOrClickableAncestor(participateNode)) {
                         fail(callId, dryRun, 8, totalSteps, "\"$participateText\" 버튼 클릭 실패(클릭 가능한 노드 없음)")
                         return@launch
                     }
-                    Log.d(TAG, "call_id=$callId \"$participateText\" 클릭 완료(8/$totalSteps 단계 전부 성공)")
+                    RemoteFlowLogger.d(TAG, "call_id=$callId \"$participateText\" 클릭 완료(8/$totalSteps 단계 전부 성공)")
+                    succeeded = true
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = false)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "자동참여 흐름 중 예외(call_id=$callId)", e)
+                RemoteFlowLogger.e(TAG, "자동참여 흐름 중 예외(call_id=$callId)", e)
                 AutoParticipateResultSender.send(callId, success = false, errorMessage = "예외: ${e.message}", dryRun = dryRun)
             } finally {
                 if (wakeLock.isHeld) wakeLock.release()
+                // 2026-09-16: 계측 로그를 실기기에서 뽑아낼 방법이 없어 원인 확정이 막혔던
+                // 문제 - 플로우가 끝나면(성공/실패 무관) 여기까지 쌓인 로그를 통째로 서버에
+                // 올려 관리자 화면(설정 페이지)에서 USB 없이 바로 확인할 수 있게 한다.
+                val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                RemoteLogSender.send(callId, deviceId, succeeded, RemoteFlowLogger.snapshot())
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 onComplete()
             }
@@ -235,7 +248,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
     // 완료 전에 먼저 실행되는 일이 없다.
     private suspend fun fail(callId: Int, dryRun: Boolean, step: Int, totalSteps: Int, reason: String) {
         val labeled = "[$step/${totalSteps}단계] $reason"
-        Log.w(TAG, "자동참여 실패(call_id=$callId): $labeled")
+        RemoteFlowLogger.w(TAG, "자동참여 실패(call_id=$callId): $labeled")
         AutoParticipateResultSender.send(callId, success = false, errorMessage = labeled, dryRun = dryRun)
     }
 
@@ -255,7 +268,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
         while (SystemClock.elapsedRealtime() < deadline) {
             val observed = rootInActiveWindow?.packageName
             pollCount++
-            Log.d(TAG, "call_id=$callId 2단계 폴링 #$pollCount(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms): rootInActiveWindow.packageName=$observed")
+            RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 폴링 #$pollCount(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms): rootInActiveWindow.packageName=$observed")
             if (observed == packageName) return true
             delay(POLL_INTERVAL_MS)
         }

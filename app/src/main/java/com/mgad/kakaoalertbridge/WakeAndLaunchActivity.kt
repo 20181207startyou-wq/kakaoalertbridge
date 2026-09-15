@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 
@@ -32,6 +31,12 @@ import androidx.activity.ComponentActivity
 // 보고도 "이 액티비티가 아예 안 불렸는지 / 불렸는데 플래그 적용이 실패했는지 / 플래그는
 // 먹었는데 파트너스 앱 실행 자체가 안 됐는지"를 확정할 수 있어야 한다. 원인이 로그로
 // 확정되기 전까지는 이 파일에 추측성 수정을 추가하지 않는다.
+//
+// 2026-09-16(2차): 위 로그를 logcat에만 남겨서는 실기기에 USB로 연결할 방법이 없어 결국
+// 못 뽑아내는 문제가 있었다 - 그래서 Log.d/w/e 대신 RemoteFlowLogger를 거쳐 같은 내용을
+// 로컬 버퍼에도 쌓고, 플로우 종료 시점(PartnersAutoParticipateService.runParticipateFlow의
+// finally)에 RemoteLogSender로 서버에 통째로 업로드한다 - 관리자 화면(설정 페이지)에서
+// USB 없이 바로 확인 가능.
 class WakeAndLaunchActivity : ComponentActivity() {
 
     companion object {
@@ -53,16 +58,16 @@ class WakeAndLaunchActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         callId = intent.getIntExtra(EXTRA_CALL_ID, -1)
         triggerElapsedMs = intent.getLongExtra(EXTRA_TRIGGER_ELAPSED_MS, -1L)
-        Log.d(TAG, "onCreate 진입(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
+        RemoteFlowLogger.d(TAG,"onCreate 진입(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
 
         val powerManager = getSystemService(PowerManager::class.java)
-        Log.d(TAG, "onCreate 시점 화면 인터랙티브 상태(isInteractive)=${powerManager?.isInteractive} (call_id=$callId)")
+        RemoteFlowLogger.d(TAG,"onCreate 시점 화면 인터랙티브 상태(isInteractive)=${powerManager?.isInteractive} (call_id=$callId)")
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 setShowWhenLocked(true)
                 setTurnScreenOn(true)
-                Log.d(TAG, "setShowWhenLocked(true)/setTurnScreenOn(true) 호출 완료(SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
+                RemoteFlowLogger.d(TAG,"setShowWhenLocked(true)/setTurnScreenOn(true) 호출 완료(SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
             } else {
                 @Suppress("DEPRECATION")
                 window.addFlags(
@@ -70,43 +75,43 @@ class WakeAndLaunchActivity : ComponentActivity() {
                         WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
                         WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
                 )
-                Log.d(TAG, "구버전 윈도우 플래그(FLAG_SHOW_WHEN_LOCKED 등) 적용 완료(SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
+                RemoteFlowLogger.d(TAG,"구버전 윈도우 플래그(FLAG_SHOW_WHEN_LOCKED 등) 적용 완료(SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
             }
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } catch (t: Throwable) {
             // NoSuchMethodError 등 Error 계열도 잡아야 함 - minSdk 24라 API 26 전용 메서드
             // 호출부는 구버전 기기에서 Exception이 아니라 Error로 터질 수 있음.
-            Log.e(TAG, "화면 켜기/잠금해제 플래그 설정 중 예외(call_id=$callId)", t)
+            RemoteFlowLogger.e(TAG,"화면 켜기/잠금해제 플래그 설정 중 예외(call_id=$callId)", t)
         }
 
         try {
             val keyguardManager = getSystemService(KeyguardManager::class.java)
-            Log.d(TAG, "KeyguardManager 조회=${keyguardManager != null}, isKeyguardLocked=${keyguardManager?.isKeyguardLocked} (call_id=$callId)")
+            RemoteFlowLogger.d(TAG,"KeyguardManager 조회=${keyguardManager != null}, isKeyguardLocked=${keyguardManager?.isKeyguardLocked} (call_id=$callId)")
             if (keyguardManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
                     override fun onDismissError() {
-                        Log.w(TAG, "requestDismissKeyguard: onDismissError(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
+                        RemoteFlowLogger.w(TAG,"requestDismissKeyguard: onDismissError(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
                     }
                     override fun onDismissSucceeded() {
-                        Log.d(TAG, "requestDismissKeyguard: onDismissSucceeded(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
+                        RemoteFlowLogger.d(TAG,"requestDismissKeyguard: onDismissSucceeded(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
                     }
                     override fun onDismissCancelled() {
-                        Log.w(TAG, "requestDismissKeyguard: onDismissCancelled(보안 잠금 등으로 취소됐을 가능성, call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
+                        RemoteFlowLogger.w(TAG,"requestDismissKeyguard: onDismissCancelled(보안 잠금 등으로 취소됐을 가능성, call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
                     }
                 })
-                Log.d(TAG, "requestDismissKeyguard 호출 완료(콜백 대기, call_id=$callId)")
+                RemoteFlowLogger.d(TAG,"requestDismissKeyguard 호출 완료(콜백 대기, call_id=$callId)")
             } else {
-                Log.w(TAG, "requestDismissKeyguard 미호출(keyguardManager=${keyguardManager != null}, SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
+                RemoteFlowLogger.w(TAG,"requestDismissKeyguard 미호출(keyguardManager=${keyguardManager != null}, SDK=${Build.VERSION.SDK_INT}, call_id=$callId)")
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "requestDismissKeyguard 호출 중 예외(call_id=$callId)", t)
+            RemoteFlowLogger.e(TAG,"requestDismissKeyguard 호출 중 예외(call_id=$callId)", t)
         }
     }
 
     override fun onResume() {
         super.onResume()
         val powerManager = getSystemService(PowerManager::class.java)
-        Log.d(TAG, "onResume 진입(call_id=$callId, 트리거 후 경과=${sinceTrigger()}, isInteractive=${powerManager?.isInteractive})")
+        RemoteFlowLogger.d(TAG,"onResume 진입(call_id=$callId, 트리거 후 경과=${sinceTrigger()}, isInteractive=${powerManager?.isInteractive})")
         launchTargetAndFinish()
     }
 
@@ -115,15 +120,15 @@ class WakeAndLaunchActivity : ComponentActivity() {
     private fun launchTargetAndFinish() {
         if (launched) return
         val packageName = intent.getStringExtra(EXTRA_TARGET_PACKAGE)
-        Log.d(TAG, "launchTargetAndFinish 시작(call_id=$callId, target=$packageName, 트리거 후 경과=${sinceTrigger()})")
+        RemoteFlowLogger.d(TAG,"launchTargetAndFinish 시작(call_id=$callId, target=$packageName, 트리거 후 경과=${sinceTrigger()})")
         if (packageName == null) {
-            Log.w(TAG, "대상 패키지명 누락 - 종료(call_id=$callId)")
+            RemoteFlowLogger.w(TAG,"대상 패키지명 누락 - 종료(call_id=$callId)")
             finish()
             return
         }
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         if (launchIntent == null) {
-            Log.w(TAG, "대상 패키지($packageName) 실행 인텐트를 못 만듦 - 종료(call_id=$callId)")
+            RemoteFlowLogger.w(TAG,"대상 패키지($packageName) 실행 인텐트를 못 만듦 - 종료(call_id=$callId)")
             finish()
             return
         }
@@ -131,9 +136,9 @@ class WakeAndLaunchActivity : ComponentActivity() {
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         try {
             startActivity(launchIntent)
-            Log.d(TAG, "파트너스 앱(${packageName}) startActivity 호출 완료(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
+            RemoteFlowLogger.d(TAG,"파트너스 앱(${packageName}) startActivity 호출 완료(call_id=$callId, 트리거 후 경과=${sinceTrigger()})")
         } catch (t: Throwable) {
-            Log.e(TAG, "파트너스 앱(${packageName}) startActivity 중 예외(call_id=$callId)", t)
+            RemoteFlowLogger.e(TAG,"파트너스 앱(${packageName}) startActivity 중 예외(call_id=$callId)", t)
         }
         finish()
     }

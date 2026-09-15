@@ -1,7 +1,10 @@
 package com.mgad.kakaoalertbridge
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -132,16 +135,34 @@ class PartnersAutoParticipateService : AccessibilityService() {
             // 패키지명 확인 등 엉뚱한 곳을 의심하며 시간을 썼던 문제 - 모든 실패 사유 앞에 단계
             // 번호를 붙여, 다음에 또 실패해도 관리자 알림 문구만 보고 바로 어느 단계인지 알 수 있게 한다.
             val totalSteps = 8
+
+            // 2026-09-15: 콜 684/692 재조사 - 타임아웃을 8초->15초로 올렸는데도 다음날 아침
+            // 똑같이 [2/8단계]에서 실패, 게다가 트리거 시각과 실패 보고 시각 사이 실제
+            // 간격이 15초가 아니라 4분 가까이 벌어져 있었다(화면이 꺼져 CPU가 잠들면
+            // delay() 기반 폴링 루프의 "경과 시간" 계산이 실제 경과 시간과 어긋남). 화면이
+            // 꺼진/잠긴 채로는 파트너스 앱 액티비티가 태스크 스택에만 올라가고 실제로 화면
+            // 맨 위(rootInActiveWindow)는 계속 잠금화면 패키지로 남아 아무리 기다려도 통과할
+            // 수 없었던 것 - 타임아웃 값의 문제가 아니었다. 플로우 시작부터 끝까지 파셜
+            // 웨이크락으로 CPU가 안 잠들게 유지한다.
+            val wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:participate:$callId")
+            wakeLock.acquire(STEP_TIMEOUT_MS * totalSteps + 30000L)
             try {
                 Log.d(TAG, "call_id=$callId 시작 - 패키지=$packageName")
 
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                if (launchIntent == null) {
+                // 대상 앱이 아예 없으면 화면을 깨울 필요도 없이 바로 실패 처리.
+                if (packageManager.getLaunchIntentForPackage(packageName) == null) {
                     fail(callId, dryRun, 1, totalSteps, "파트너스 앱(${packageName})을 찾을 수 없음")
                     return@launch
                 }
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                startActivity(launchIntent)
+                // WakeAndLaunchActivity가 화면을 켜고(꺼져 있었다면) 잠금을 넘긴 뒤에야
+                // 파트너스 앱을 실행한다 - 접근성 서비스 자체는 윈도우가 없어 이 두 가지를
+                // 직접 할 수 없음.
+                val wakeIntent = Intent(applicationContext, WakeAndLaunchActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(WakeAndLaunchActivity.EXTRA_TARGET_PACKAGE, packageName)
+                }
+                startActivity(wakeIntent)
 
                 if (!waitForPackageForeground(packageName)) {
                     fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
@@ -182,6 +203,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 Log.e(TAG, "자동참여 흐름 중 예외(call_id=$callId)", e)
                 AutoParticipateResultSender.send(callId, success = false, errorMessage = "예외: ${e.message}", dryRun = dryRun)
             } finally {
+                if (wakeLock.isHeld) wakeLock.release()
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 onComplete()
             }
@@ -198,26 +220,31 @@ class PartnersAutoParticipateService : AccessibilityService() {
         AutoParticipateResultSender.send(callId, success = false, errorMessage = labeled, dryRun = dryRun)
     }
 
+    // 2026-09-15: elapsed를 POLL_INTERVAL_MS 누적(카운터)으로 계산하던 방식은 delay() 호출이
+    // 실제로 그 시간만큼만 걸린다는 전제에 의존한다. 화면이 꺼져 기기가 Doze/절전 상태로
+    // 들어가면 delay()가 실제로는 훨씬 오래(수십 초~수 분) 걸릴 수 있는데도 카운터는 여전히
+    // "타임아웃 값만큼만 기다렸다"고 착각해 정해진 반복 횟수를 다 채울 때까지 계속 대기하게
+    // 된다(콜 684/692 - 트리거~실패 보고 간 실제 간격이 15초가 아니라 4분 가까이 벌어졌던
+    // 원인). SystemClock.elapsedRealtime()(절전 중에도 흐르는 단조 시계)으로 실제 경과 시간을
+    // 재도록 바꿔, 타임아웃이 실제 벽시계 기준으로도 의도한 값을 넘지 않게 한다.
     private suspend fun waitForPackageForeground(packageName: String): Boolean {
-        var elapsed = 0L
-        while (elapsed < STEP_TIMEOUT_MS) {
+        val deadline = SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
             if (rootInActiveWindow?.packageName == packageName) return true
             delay(POLL_INTERVAL_MS)
-            elapsed += POLL_INTERVAL_MS
         }
         return rootInActiveWindow?.packageName == packageName
     }
 
     private suspend fun waitForNodeByText(text: String): AccessibilityNodeInfo? {
-        var elapsed = 0L
-        while (elapsed < STEP_TIMEOUT_MS) {
+        val deadline = SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
             val root = rootInActiveWindow
             if (root != null) {
                 val matches = root.findAccessibilityNodeInfosByText(text)
                 if (matches.isNotEmpty()) return matches[0]
             }
             delay(POLL_INTERVAL_MS)
-            elapsed += POLL_INTERVAL_MS
         }
         return null
     }
@@ -226,15 +253,14 @@ class PartnersAutoParticipateService : AccessibilityService() {
     // 없어, 화면에서 클릭 가능한 노드 중 지정된 텍스트(탭 이름 등)를 제외한 첫 번째 노드를
     // 연다. 드라이런 로그로 실제 몇 번째 항목이 열리는지 확인 후 필요하면 조정할 것.
     private suspend fun waitForFirstClickableExcluding(excludeTexts: Set<String>): AccessibilityNodeInfo? {
-        var elapsed = 0L
-        while (elapsed < STEP_TIMEOUT_MS) {
+        val deadline = SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
             val root = rootInActiveWindow
             if (root != null) {
                 val found = findFirstClickable(root, excludeTexts)
                 if (found != null) return found
             }
             delay(POLL_INTERVAL_MS)
-            elapsed += POLL_INTERVAL_MS
         }
         return null
     }

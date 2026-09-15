@@ -34,6 +34,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
         // 여유를 갖는다.
         private const val STEP_TIMEOUT_MS = 15000L
         private const val POLL_INTERVAL_MS = 300L
+        private const val DUMP_NODE_LIMIT = 40
 
         private var instance: WeakReference<PartnersAutoParticipateService>? = null
         private val processedCallIds = mutableSetOf<Int>()
@@ -195,7 +196,18 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
                 val tabNode = waitForNodeByText(tabText)
-                    ?: run { fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함"); return@launch }
+                    ?: run {
+                        // 2026-09-16: 콜 704 - 업무시간외(2단계 통과 후 화면꺼짐/잠금해제
+                        // 직후)에만 3단계에서 실패, 같은 날 업무시간중 콜(700/702)은 통과.
+                        // 화면이 진짜 다른 상태(예: 견적입찰 탭이 없는 다른 초기 화면)인지,
+                        // 아니면 아직 렌더링이 덜 끝난 것인지 추측만으로는 구분 불가 - 다음
+                        // 실패 때 바로 원인을 확정할 수 있도록 실패 시점 화면에 보이는
+                        // 텍스트/설명 요소를 그대로 로그에 남긴다.
+                        val visible = dumpVisibleNodeInfo(rootInActiveWindow)
+                        RemoteFlowLogger.w(TAG, "call_id=$callId 3단계 실패 시점 화면 요소(최대 ${DUMP_NODE_LIMIT}개): ${if (visible.isEmpty()) "(없음 - rootInActiveWindow=${rootInActiveWindow})" else visible.joinToString(" | ")}")
+                        fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함")
+                        return@launch
+                    }
                 if (!clickSelfOrClickableAncestor(tabNode)) {
                     fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
                     return@launch
@@ -315,6 +327,28 @@ class PartnersAutoParticipateService : AccessibilityService() {
             if (result != null) return result
         }
         return null
+    }
+
+    // 2026-09-16: 3단계 실패 원인 확정용 - text뿐 아니라 contentDescription도 같이 남긴다.
+    // 하단 탭이 아이콘 전용(contentDescription만 있고 text는 없음)으로 구현돼 있다면
+    // waitForNodeByText(text 매칭만 함)가 애초에 못 찾는 게 당연한데, 이 가능성도 로그
+    // 하나로 바로 구분할 수 있어야 한다.
+    private fun dumpVisibleNodeInfo(node: AccessibilityNodeInfo?, limit: Int = DUMP_NODE_LIMIT): List<String> {
+        val result = mutableListOf<String>()
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null || result.size >= limit) return
+            val text = n.text?.toString()?.trim()
+            val desc = n.contentDescription?.toString()?.trim()
+            if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
+                result.add("text=\"${text.orEmpty()}\" desc=\"${desc.orEmpty()}\" clickable=${n.isClickable}")
+            }
+            for (i in 0 until n.childCount) {
+                if (result.size >= limit) return
+                walk(n.getChild(i))
+            }
+        }
+        walk(node)
+        return result
     }
 
     private fun clickSelfOrClickableAncestor(node: AccessibilityNodeInfo): Boolean {

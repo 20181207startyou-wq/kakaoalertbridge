@@ -147,8 +147,18 @@ class PartnersAutoParticipateService : AccessibilityService() {
             val wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:participate:$callId")
             wakeLock.acquire(STEP_TIMEOUT_MS * totalSteps + 30000L)
+            // 2026-09-16: 화면깨우기 수정(WakeAndLaunchActivity, commit 4acb60c) 설치 후에도
+            // 11:33 알림에서 동일 [2/8단계] 오류 재발 - 이 수정이 실제로 의도대로 동작하는지
+            // 자체가 검증 안 된 채로 "고쳤다"고 보고해온 게 문제였다. 원인을 또 추측해서
+            // 고치는 대신, 아래 flowStartElapsedMs를 기준 시계로 삼아 서비스<->액티비티 양쪽
+            // 로그를 하나로 이어 붙일 수 있게 하고, 2단계 대기 중 매 폴링마다 실제로 감지된
+            // 패키지명을 전부 남겨 다음 실패 시 "액티비티가 아예 안 불렸는지 / 불렸는데 API
+            // 호출이 실패했는지 / 다 성공했는데 화면엔 여전히 다른 게 떠있는지"를 로그만으로
+            // 확정한다. 원인이 로그로 확정되기 전까지 이 블록에 추측성 수정을 추가하지 않는다.
+            val flowStartElapsedMs = SystemClock.elapsedRealtime()
             try {
-                Log.d(TAG, "call_id=$callId 시작 - 패키지=$packageName")
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                Log.d(TAG, "call_id=$callId 시작 - 패키지=$packageName, 시작 시점 isInteractive=${powerManager.isInteractive}")
 
                 // 대상 앱이 아예 없으면 화면을 깨울 필요도 없이 바로 실패 처리.
                 if (packageManager.getLaunchIntentForPackage(packageName) == null) {
@@ -161,13 +171,22 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 val wakeIntent = Intent(applicationContext, WakeAndLaunchActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     putExtra(WakeAndLaunchActivity.EXTRA_TARGET_PACKAGE, packageName)
+                    putExtra(WakeAndLaunchActivity.EXTRA_CALL_ID, callId)
+                    putExtra(WakeAndLaunchActivity.EXTRA_TRIGGER_ELAPSED_MS, flowStartElapsedMs)
                 }
-                startActivity(wakeIntent)
+                try {
+                    startActivity(wakeIntent)
+                    Log.d(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 호출 완료(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms)")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "call_id=$callId WakeAndLaunchActivity startActivity 중 예외", t)
+                }
 
-                if (!waitForPackageForeground(packageName)) {
+                if (!waitForPackageForeground(callId, flowStartElapsedMs, packageName)) {
+                    Log.w(TAG, "call_id=$callId 2단계 최종 실패 - 총 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, 종료 시점 isInteractive=${powerManager.isInteractive}, 최종 rootInActiveWindow.packageName=${rootInActiveWindow?.packageName}")
                     fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
                     return@launch
                 }
+                Log.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
                 val tabNode = waitForNodeByText(tabText)
                     ?: run { fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함"); return@launch }
@@ -227,10 +246,17 @@ class PartnersAutoParticipateService : AccessibilityService() {
     // 된다(콜 684/692 - 트리거~실패 보고 간 실제 간격이 15초가 아니라 4분 가까이 벌어졌던
     // 원인). SystemClock.elapsedRealtime()(절전 중에도 흐르는 단조 시계)으로 실제 경과 시간을
     // 재도록 바꿔, 타임아웃이 실제 벽시계 기준으로도 의도한 값을 넘지 않게 한다.
-    private suspend fun waitForPackageForeground(packageName: String): Boolean {
+    // 2026-09-16: 매 폴링마다 실제로 감지된 패키지명을 남긴다 - null(rootInActiveWindow 자체가
+    // 없음)인지, 잠금화면/런처 등 다른 패키지인지, 그냥 감지 로직 버그로 대상 패키지인데도
+    // 놓치는 것인지 이 로그만으로 구분하기 위함.
+    private suspend fun waitForPackageForeground(callId: Int, flowStartElapsedMs: Long, packageName: String): Boolean {
         val deadline = SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS
+        var pollCount = 0
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (rootInActiveWindow?.packageName == packageName) return true
+            val observed = rootInActiveWindow?.packageName
+            pollCount++
+            Log.d(TAG, "call_id=$callId 2단계 폴링 #$pollCount(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms): rootInActiveWindow.packageName=$observed")
+            if (observed == packageName) return true
             delay(POLL_INTERVAL_MS)
         }
         return rootInActiveWindow?.packageName == packageName

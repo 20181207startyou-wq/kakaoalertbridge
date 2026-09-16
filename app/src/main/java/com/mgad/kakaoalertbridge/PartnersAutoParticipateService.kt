@@ -226,8 +226,16 @@ class PartnersAutoParticipateService : AccessibilityService() {
                     return@launch
                 }
                 if (!clickSelfOrClickableAncestor(tabNode)) {
-                    fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
-                    return@launch
+                    // 2026-09-16(콜 713): 잔존 다이얼로그를 닫고 재탐색해 찾은 탭 노드가 화면
+                    // 전환이 덜 끝난 시점의 스테일(stale) 참조라 클릭 시 클릭 가능한 조상을
+                    // 못 찾는 사례 확인 - 한 번 더 폴링 간격만큼 기다렸다가 노드를 새로 조회해
+                    // 재시도한다.
+                    delay(POLL_INTERVAL_MS)
+                    val refetchedTabNode = rootInActiveWindow?.findAccessibilityNodeInfosByText(tabText)?.firstOrNull()
+                    if (refetchedTabNode == null || !clickSelfOrClickableAncestor(refetchedTabNode)) {
+                        fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
+                        return@launch
+                    }
                 }
 
                 delay(1500)

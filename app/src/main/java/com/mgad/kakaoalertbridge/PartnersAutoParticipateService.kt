@@ -228,10 +228,11 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 if (!clickSelfOrClickableAncestor(tabNode)) {
                     // 2026-09-16(콜 713): 잔존 다이얼로그를 닫고 재탐색해 찾은 탭 노드가 화면
                     // 전환이 덜 끝난 시점의 스테일(stale) 참조라 클릭 시 클릭 가능한 조상을
-                    // 못 찾는 사례 확인 - 한 번 더 폴링 간격만큼 기다렸다가 노드를 새로 조회해
-                    // 재시도한다.
-                    delay(POLL_INTERVAL_MS)
-                    val refetchedTabNode = rootInActiveWindow?.findAccessibilityNodeInfosByText(tabText)?.firstOrNull()
+                    // 못 찾는 사례 확인 - 단발성 재조회(findAccessibilityNodeInfosByText 1회)는
+                    // POLL_INTERVAL_MS 안에 전환이 안 끝나면 똑같이 못 눌리는 노드를 다시 잡을
+                    // 수 있었다. waitForNodeByText를 재호출해 화면이 안정될 때까지(최대
+                    // STEP_TIMEOUT_MS) 폴링하며 재조회한다.
+                    val refetchedTabNode = waitForNodeByText(tabText)
                     if (refetchedTabNode == null || !clickSelfOrClickableAncestor(refetchedTabNode)) {
                         fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
                         return@launch

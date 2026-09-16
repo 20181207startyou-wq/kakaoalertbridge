@@ -272,6 +272,9 @@ class KakaoNotificationListenerService : NotificationListenerService() {
     // 실제 전송 로직은 HeartbeatSender(FcmMessagingService의 웨이크 핑 핸들러와 공유)로 위임.
     private fun sendHeartbeat(listenerConnected: Boolean) {
         HeartbeatSender.send(this, listenerConnected)
+        // 2026-09-16: 인앱 자동 업데이트 - 이 5분 루프를 타되, 실제 서버 조회는 내부에서
+        // 6시간 게이트로 걸러진다(매 tick마다 조회하면 불필요한 트래픽).
+        UpdateChecker.maybeCheckPeriodic(this)
     }
 
     private fun startHeartbeatLoop() {

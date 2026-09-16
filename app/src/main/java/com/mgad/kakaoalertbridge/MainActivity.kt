@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -90,6 +91,7 @@ fun StatusScreen() {
     var tabButtonText by remember { mutableStateOf(AutoParticipateSettings.getTabButtonText(context)) }
     var participateButtonText by remember { mutableStateOf(AutoParticipateSettings.getParticipateButtonText(context)) }
     var dismissButtonText by remember { mutableStateOf(AutoParticipateSettings.getDismissButtonText(context)) }
+    var updateCheckInProgress by remember { mutableStateOf(false) }
 
     fun checkStatus() {
         val enabledListeners = Settings.Secure.getString(
@@ -268,12 +270,55 @@ fun StatusScreen() {
         }
 
         Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "v${BuildConfig.GIT_COMMIT_HASH} · ${BuildConfig.BUILD_TIMESTAMP} 빌드",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "v${BuildConfig.GIT_COMMIT_HASH} · ${BuildConfig.BUILD_TIMESTAMP} 빌드",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = {
+                    updateCheckInProgress = true
+                    UpdateChecker.checkNow(context) { result ->
+                        updateCheckInProgress = false
+                        when (result) {
+                            is UpdateChecker.CheckResult.UpToDate ->
+                                Toast.makeText(context, "최신 버전입니다", Toast.LENGTH_SHORT).show()
+                            is UpdateChecker.CheckResult.Error ->
+                                Toast.makeText(context, "업데이트 확인 실패: ${result.message}", Toast.LENGTH_LONG).show()
+                            is UpdateChecker.CheckResult.UpdateAvailable -> {
+                                if (!UpdateChecker.canInstallPackages(context)) {
+                                    Toast.makeText(
+                                        context,
+                                        "새 버전(${result.info.version})이 있습니다. 먼저 \"출처를 알 수 없는 앱\" 설치 권한을 허용해주세요",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                    context.startActivity(UpdateChecker.requestInstallPermissionIntent(context))
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "새 버전(${result.info.version}) 다운로드 중...",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                    UpdateChecker.downloadAndInstallNow(context, result.info) { success, errorMessage ->
+                                        if (!success) {
+                                            Toast.makeText(context, errorMessage ?: "업데이트 실패", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                enabled = !updateCheckInProgress,
+            ) {
+                Text(if (updateCheckInProgress) "확인 중..." else "지금 업데이트 확인")
+            }
+        }
     }
 }
 

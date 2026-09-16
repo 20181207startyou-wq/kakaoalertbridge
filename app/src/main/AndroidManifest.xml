@@ -21,6 +21,10 @@
     <!-- 2026-09-15: 자동참여 흐름 중 화면이 꺼져있어도 CPU가 잠들지 않게 유지(Doze로 인한
          폴링 지연/무한대기 방지) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 2026-09-16: 인앱 자동 업데이트 - 다운로드한 APK를 앱이 직접 설치 확인창까지 띄우려면
+         필요(Android 8+). 최초 1회는 사용자가 명시적으로 허용해야 하며(정책상 우회 불가),
+         UpdateChecker.canInstallPackages()로 확인 후 없으면 권한 설정 화면으로 안내한다. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -92,6 +96,19 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/auto_participate_accessibility_config" />
         </service>
+
+        <!-- 2026-09-16: 인앱 자동 업데이트가 다운로드한 APK 파일(앱 전용 외부 저장소)을
+             시스템 설치 프로그램에게 content:// URI로 넘겨주기 위함(file:// URI 직접 노출은
+             Android 7+에서 FileUriExposedException으로 막혀있음). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

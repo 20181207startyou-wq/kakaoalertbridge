@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- UpdateChecker가 context.getExternalFilesDir(null)에 APK를 내려받으므로 루트 전체를 노출 -->
+    <external-files-path name="update_apk" path="." />
+</paths>

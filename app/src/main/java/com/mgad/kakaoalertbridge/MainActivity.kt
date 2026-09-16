@@ -89,6 +89,7 @@ fun StatusScreen() {
     var partnersPackageName by remember { mutableStateOf(AutoParticipateSettings.getPartnersPackageName(context)) }
     var tabButtonText by remember { mutableStateOf(AutoParticipateSettings.getTabButtonText(context)) }
     var participateButtonText by remember { mutableStateOf(AutoParticipateSettings.getParticipateButtonText(context)) }
+    var dismissButtonText by remember { mutableStateOf(AutoParticipateSettings.getDismissButtonText(context)) }
 
     fun checkStatus() {
         val enabledListeners = Settings.Secure.getString(
@@ -249,6 +250,17 @@ fun StatusScreen() {
                         AutoParticipateSettings.setParticipateButtonText(context, it)
                     },
                     label = { Text("상담참여 버튼 텍스트") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = dismissButtonText,
+                    onValueChange = {
+                        dismissButtonText = it
+                        AutoParticipateSettings.setDismissButtonText(context, it)
+                    },
+                    label = { Text("완료 확인 다이얼로그 닫기 버튼 텍스트") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

@@ -137,6 +137,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
             val packageName = AutoParticipateSettings.getPartnersPackageName(applicationContext)
             val tabText = AutoParticipateSettings.getTabButtonText(applicationContext)
             val participateText = AutoParticipateSettings.getParticipateButtonText(applicationContext)
+            val dismissText = AutoParticipateSettings.getDismissButtonText(applicationContext)
 
             // 2026-09-15: 실패 알림에 "몇 번째 단계"인지가 안 남아 있어서, com.classy.ganpoompartner
             // 패키지명 확인 등 엉뚱한 곳을 의심하며 시간을 썼던 문제 - 모든 실패 사유 앞에 단계
@@ -195,19 +196,35 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 }
                 RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
-                val tabNode = waitForNodeByText(tabText)
-                    ?: run {
-                        // 2026-09-16: 콜 704 - 업무시간외(2단계 통과 후 화면꺼짐/잠금해제
-                        // 직후)에만 3단계에서 실패, 같은 날 업무시간중 콜(700/702)은 통과.
-                        // 화면이 진짜 다른 상태(예: 견적입찰 탭이 없는 다른 초기 화면)인지,
-                        // 아니면 아직 렌더링이 덜 끝난 것인지 추측만으로는 구분 불가 - 다음
-                        // 실패 때 바로 원인을 확정할 수 있도록 실패 시점 화면에 보이는
-                        // 텍스트/설명 요소를 그대로 로그에 남긴다.
-                        val visible = dumpVisibleNodeInfo(rootInActiveWindow)
-                        RemoteFlowLogger.w(TAG, "call_id=$callId 3단계 실패 시점 화면 요소(최대 ${DUMP_NODE_LIMIT}개): ${if (visible.isEmpty()) "(없음 - rootInActiveWindow=${rootInActiveWindow})" else visible.joinToString(" | ")}")
-                        fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함")
-                        return@launch
+                var tabNode = waitForNodeByText(tabText)
+                if (tabNode == null) {
+                    // 2026-09-16(콜 709 계측 로그로 원인 확정): 3단계 실패 시점 화면에는
+                    // "견적입찰" 탭이 있어야 할 목록 화면 대신, 이전 실행에서 "상담참여" 클릭
+                    // 직후 뜬 "상담참여가 완료되었습니다" 확인 다이얼로그(확인 버튼 1개)만
+                    // 남아있었다 - 그 실행이 끝날 때 GLOBAL_ACTION_HOME으로만 넘어가고 이
+                    // 다이얼로그를 직접 닫지 않았는데, 기기가 오래 유휴 상태(14시간 이상)였다가
+                    // 파트너스 앱 프로세스가 재생성되며 안 닫은 다이얼로그 상태가 그대로
+                    // 복원된 것으로 보인다(707 성공 후 707->709 사이 14시간48분 유휴, 반면
+                    // 706->707은 1시간41분만 유휴했을 때는 재발하지 않음). 렌더링 지연은 아님
+                    // - 2단계 통과 후 3단계 실패까지 이미 15초(STEP_TIMEOUT_MS) 넘게 흘렀다.
+                    // "$dismissText" 버튼이 보이면 눌러서 닫고 같은 타임아웃으로 한 번 더
+                    // 탐색한다.
+                    val dismissNode = rootInActiveWindow?.findAccessibilityNodeInfosByText(dismissText)?.firstOrNull()
+                    if (dismissNode != null) {
+                        RemoteFlowLogger.w(TAG, "call_id=$callId 3단계에서 \"$tabText\" 대신 \"$dismissText\" 다이얼로그 발견 - 닫고 재탐색")
+                        clickSelfOrClickableAncestor(dismissNode)
+                        delay(1000)
+                        tabNode = waitForNodeByText(tabText)
                     }
+                }
+                if (tabNode == null) {
+                    // 다이얼로그도 없었거나, 닫고 재탐색해도 여전히 못 찾은 경우 - 다음 실패
+                    // 때 바로 원인을 확정할 수 있도록 실패 시점 화면 요소를 그대로 로그에 남긴다.
+                    val visible = dumpVisibleNodeInfo(rootInActiveWindow)
+                    RemoteFlowLogger.w(TAG, "call_id=$callId 3단계 실패 시점 화면 요소(최대 ${DUMP_NODE_LIMIT}개): ${if (visible.isEmpty()) "(없음 - rootInActiveWindow=${rootInActiveWindow})" else visible.joinToString(" | ")}")
+                    fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함")
+                    return@launch
+                }
                 if (!clickSelfOrClickableAncestor(tabNode)) {
                     fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
                     return@launch

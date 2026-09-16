@@ -23,10 +23,16 @@ object AutoParticipateSettings {
     private const val KEY_PACKAGE_NAME = "partners_package_name"
     private const val KEY_TAB_TEXT = "tab_button_text"
     private const val KEY_PARTICIPATE_TEXT = "participate_button_text"
+    private const val KEY_DISMISS_TEXT = "dismiss_button_text"
 
     const val DEFAULT_TAB_TEXT = "견적입찰"
     const val DEFAULT_PARTICIPATE_TEXT = "상담참여"
     const val DEFAULT_PACKAGE_NAME = "com.classy.ganpoompartner"
+    // 2026-09-16: 콜 709 계측 로그로 확정 - 오래 유휴 상태였다가 파트너스 앱 프로세스가
+    // 재생성될 때, 이전 실행에서 닫지 않고 남겨둔 "상담참여가 완료되었습니다" 확인
+    // 다이얼로그가 그대로 복원되어 3단계(견적입찰 탭 탐색)를 막았다. 이 버튼을 눌러 닫고
+    // 탐색을 재시도한다.
+    const val DEFAULT_DISMISS_TEXT = "확인"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -62,6 +68,11 @@ object AutoParticipateSettings {
         prefs(context).getString(KEY_PARTICIPATE_TEXT, DEFAULT_PARTICIPATE_TEXT) ?: DEFAULT_PARTICIPATE_TEXT
     fun setParticipateButtonText(context: Context, value: String) =
         prefs(context).edit().putString(KEY_PARTICIPATE_TEXT, value).apply()
+
+    fun getDismissButtonText(context: Context): String =
+        prefs(context).getString(KEY_DISMISS_TEXT, DEFAULT_DISMISS_TEXT) ?: DEFAULT_DISMISS_TEXT
+    fun setDismissButtonText(context: Context, value: String) =
+        prefs(context).edit().putString(KEY_DISMISS_TEXT, value).apply()
 
     // 패키지명이 비어있으면 어느 앱을 열어야 할지 알 수 없으므로 설정이 안 된 것으로 간주.
     fun isConfigured(context: Context): Boolean = getPartnersPackageName(context).isNotBlank()

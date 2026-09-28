@@ -225,18 +225,25 @@ class PartnersAutoParticipateService : AccessibilityService() {
                     fail(callId, dryRun, 3, totalSteps, "\"$tabText\" 탭을 찾지 못함")
                     return@launch
                 }
-                if (!clickSelfOrClickableAncestor(tabNode)) {
-                    // 2026-09-16(콜 713): 잔존 다이얼로그를 닫고 재탐색해 찾은 탭 노드가 화면
-                    // 전환이 덜 끝난 시점의 스테일(stale) 참조라 클릭 시 클릭 가능한 조상을
-                    // 못 찾는 사례 확인 - 단발성 재조회(findAccessibilityNodeInfosByText 1회)는
-                    // POLL_INTERVAL_MS 안에 전환이 안 끝나면 똑같이 못 눌리는 노드를 다시 잡을
-                    // 수 있었다. waitForNodeByText를 재호출해 화면이 안정될 때까지(최대
-                    // STEP_TIMEOUT_MS) 폴링하며 재조회한다.
-                    val refetchedTabNode = waitForNodeByText(tabText)
-                    if (refetchedTabNode == null || !clickSelfOrClickableAncestor(refetchedTabNode)) {
-                        fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
-                        return@launch
-                    }
+                // 2026-09-28(콜 924/935 등 [4/8단계] 73건 전수분석): 2026-09-23까지 정상 작동하던
+                // 자동참여가 그날 이후 100% [4/8단계]에서 실패("견적입찰" text는 찾지만 self/조상
+                // 중 clickable 없음)로 회귀. cold launch에서도 앱 전면전환 후 동일 실패라 타이밍/
+                // 버스트 레이스가 아니라 파트너스 앱 UI 변경이 유력한데, 그간 [4/8단계] 실패
+                // 경로에는 화면 덤프가 없어(=[3/8단계]에만 있었음) 실제 노드트리를 볼 수 없었던 게
+                // 원인 확정을 막던 병목이었다. 두 가지를 함께 적용한다:
+                //  (1) waitForNodeByText는 matches[0](탐색 순서상 첫 매치)만 돌려주는데, UI 변경으로
+                //      "견적입찰" 텍스트가 클릭 불가한 라벨/헤더로 화면 앞쪽에 새로 생기면 계속 그
+                //      못 누르는 노드만 잡힌다. 모든 "견적입찰" 매치 중 self/조상이 clickable한 첫
+                //      노드를 고르는 waitForClickableNodeByText로 바꾼다(기존 동작을 엄격히 포함 -
+                //      matches[0]가 눌리면 그대로 그걸 고름, 안 눌릴 때만 다음 매치를 본다).
+                //  (2) 그래도 clickable 매치가 없으면 [4/8단계] 실패 직전 화면 요소를 덤프해 다음
+                //      재발 때 새 UI의 실제 노드트리로 선택자를 확정할 수 있게 한다.
+                val clickableTabNode = waitForClickableNodeByText(tabText)
+                if (clickableTabNode == null || !clickSelfOrClickableAncestor(clickableTabNode)) {
+                    val visible = dumpVisibleNodeInfo(rootInActiveWindow)
+                    RemoteFlowLogger.w(TAG, "call_id=$callId 4단계 실패 시점 화면 요소(최대 ${DUMP_NODE_LIMIT}개): ${if (visible.isEmpty()) "(없음 - rootInActiveWindow=${rootInActiveWindow})" else visible.joinToString(" | ")}")
+                    fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
+                    return@launch
                 }
 
                 delay(1500)
@@ -320,6 +327,30 @@ class PartnersAutoParticipateService : AccessibilityService() {
             if (root != null) {
                 val matches = root.findAccessibilityNodeInfosByText(text)
                 if (matches.isNotEmpty()) return matches[0]
+            }
+            delay(POLL_INTERVAL_MS)
+        }
+        return null
+    }
+
+    // 2026-09-28: waitForNodeByText는 화면상 첫 번째 텍스트 매치(matches[0])만 반환하는데,
+    // 파트너스 앱 UI 변경으로 같은 텍스트("견적입찰")가 클릭 불가한 라벨/헤더로 화면 앞쪽에
+    // 하나 더 생기면 실제 클릭 가능한 탭 대신 그 못 누르는 노드만 계속 잡혀 [4/8단계]에서
+    // 무한 실패한다. 모든 매치를 순회하며 self 또는 조상이 clickable한 첫 노드를 골라
+    // 반환한다 - 못 누르는 노드가 앞에 있어도 뒤의 진짜 탭을 찾을 수 있다. 매 폴링마다
+    // 재조회하므로 화면 전환이 덜 끝난 스테일 노드 문제(콜 713)도 함께 흡수한다.
+    private suspend fun waitForClickableNodeByText(text: String): AccessibilityNodeInfo? {
+        val deadline = SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                for (match in root.findAccessibilityNodeInfosByText(text)) {
+                    var current: AccessibilityNodeInfo? = match
+                    while (current != null) {
+                        if (current.isClickable) return match
+                        current = current.parent
+                    }
+                }
             }
             delay(POLL_INTERVAL_MS)
         }

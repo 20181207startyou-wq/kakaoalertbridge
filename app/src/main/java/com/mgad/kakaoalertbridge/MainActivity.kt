@@ -110,6 +110,10 @@ fun StatusScreen() {
         accessibilityEnabled = enabledAccessibilityServices.contains(
             "${context.packageName}/${context.packageName}.PartnersAutoParticipateService"
         )
+
+        // 화면을 열거나 설정에 다녀올 때마다 접근성 꺼짐 상시 알림도 최신 상태로 갱신
+        // (꺼져 있으면 띄우고, 방금 켜고 돌아왔으면 즉시 내린다).
+        AccessibilityStatusNotifier.refresh(context)
     }
 
     checkStatus()
@@ -173,6 +177,28 @@ fun StatusScreen() {
             }) {
                 Text("접근성 서비스 설정 열기")
             }
+
+            // 2026-10-15 사고: 접근성 서비스가 10일 가까이 꺼진 채 방치돼 콜이 자동참여되지
+            // 않았다. 접근성 서비스는 앱이 코드로 다시 켤 수 없고(보안), 제조사 절전/미사용 앱
+            // 권한 자동해제 등으로 조용히 꺼질 수 있으므로, 꺼졌을 때 다시 켜는 방법과
+            // 재발을 막는 체크 항목을 설정 화면에 상시 안내한다.
+            if (!accessibilityEnabled) {
+                Spacer(modifier = Modifier.height(8.dp))
+                HelpNote(
+                    "⚠️ 꺼져 있으면 콜이 자동참여되지 않습니다. 위 버튼으로 접근성 설정을 열어\n" +
+                        "'MG애드 야간 상담참여 자동확보'를 켜주세요.\n" +
+                        "토글이 회색으로 안 켜지면(제한된 설정): 휴대폰 설정 → 앱 → MG애드 → 우측 상단\n" +
+                        "점 세 개 메뉴 → '제한된 설정 허용'을 누른 뒤 다시 켜세요."
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            HelpNote(
+                "📵 삼성 등 제조사 기기는 다음을 함께 확인해 접근성이 자동으로 꺼지는 걸 막아주세요.\n" +
+                    "· 설정 → 배터리 → 앱 절전에서 MG애드를 '제한 안 함'으로\n" +
+                    "· 설정 → 앱 → MG애드 → 배터리 → '제한 없음'\n" +
+                    "· 설정 → 앱 → (우측 상단) 설정 → '사용하지 않는 앱 자동 비활성화/권한 제거'에서 MG애드 제외\n" +
+                    "· 기기 관리/디바이스 케어의 '자동 최적화' 대상에서 MG애드 제외"
+            )
 
             Spacer(modifier = Modifier.height(14.dp))
             ToggleRow(
@@ -349,6 +375,15 @@ private fun StatusLine(ok: Boolean, okText: String, badText: String) {
         text = if (ok) okText else badText,
         fontSize = 13.sp,
         color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+    )
+}
+
+@Composable
+private fun HelpNote(text: String) {
+    Text(
+        text = text,
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 

@@ -275,6 +275,10 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         // 2026-09-16: 인앱 자동 업데이트 - 이 5분 루프를 타되, 실제 서버 조회는 내부에서
         // 6시간 게이트로 걸러진다(매 tick마다 조회하면 불필요한 트래픽).
         UpdateChecker.maybeCheckPeriodic(this)
+        // 2026-10-15 사고 재발 방지: 접근성 서비스가 꺼져 자동참여가 멈춘 걸 폰에서 즉시
+        // 알아채도록, 주기(5분)마다 상태를 점검해 꺼져 있으면 상시 알림을 띄운다(켜져 있으면
+        // 내린다). 이 리스너 서비스는 접근성 서비스가 꺼져도 계속 살아있으므로 감지 주체로 적합.
+        AccessibilityStatusNotifier.refresh(this)
     }
 
     private fun startHeartbeatLoop() {

@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 사이드로드용 APK 산출물 - 로컬 전용(서버 releases/에서 직접 서빙, git 추적 안 함)
+releases/

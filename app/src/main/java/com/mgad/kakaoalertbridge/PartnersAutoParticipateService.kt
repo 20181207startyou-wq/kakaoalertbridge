@@ -196,6 +196,18 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 }
                 RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
+                // 2026-11-09([4/8단계] 실패 덤프로 원인 재확정 - 콜 1289/1285/1288 등 11/9 버스트):
+                // 기존 닫기 처리는 tabNode==null(3단계)에서만 동작했는데, 실제 11/9 덤프는
+                // [4/8단계] 실패 시점 화면이 "상담참여가 완료되었습니다" 확인 다이얼로그(확인 1개)
+                // 였다. 같은 버스트에서 직전 콜(예: 1293, "상담참여" 클릭 성공)이 띄운 완료 모달이
+                // 안 닫힌 채 다음 콜이 시작되면, 모달 뒤에 남은 "견적입찰" 텍스트를
+                // waitForNodeByText(3단계)는 그대로 찾아 통과하지만(모달이 덮고 있어 clickable은
+                // 아님) 4단계 clickable 탐색은 15초 내내 모달만 봐서 실패한다. 화면이 꺼져 있던
+                // 콜(1293 등)은 콜드런치로 모달 없이 깨끗이 시작돼 성공 - 이 "직전 콜 완료 모달
+                // 잔존" 차이가 상담참여-성공/견적입찰-실패를 가르는 핵심이었다. 매 콜 시작 시
+                // 남은 완료 다이얼로그를 선제적으로 닫아 깨끗한 목록에서 3/4단계를 시작한다.
+                dismissLingeringConfirmDialog(callId, dismissText)
+
                 var tabNode = waitForNodeByText(tabText)
                 if (tabNode == null) {
                     // 2026-09-16(콜 709 계측 로그로 원인 확정): 3단계 실패 시점 화면에는
@@ -238,8 +250,19 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 //      matches[0]가 눌리면 그대로 그걸 고름, 안 눌릴 때만 다음 매치를 본다).
                 //  (2) 그래도 clickable 매치가 없으면 [4/8단계] 실패 직전 화면 요소를 덤프해 다음
                 //      재발 때 새 UI의 실제 노드트리로 선택자를 확정할 수 있게 한다.
-                val clickableTabNode = waitForClickableNodeByText(tabText)
-                if (clickableTabNode == null || !clickSelfOrClickableAncestor(clickableTabNode)) {
+                var clickableTabNode = waitForClickableNodeByText(tabText)
+                var tabClicked = clickableTabNode != null && clickSelfOrClickableAncestor(clickableTabNode)
+                if (!tabClicked) {
+                    // 2026-11-09: clickable "견적입찰"을 못 눌렀다면 완료 확인 다이얼로그가 모달로
+                    // 덮고 있을 가능성이 가장 크다(11/9 덤프). 선제 닫기 이후에도 버스트 타이밍상
+                    // 모달이 늦게 떠서 4단계 진입 후 다시 덮는 경우를 흡수 - 남은 다이얼로그를 닫고
+                    // 한 번 더 clickable 탭을 탐색/클릭한다.
+                    if (dismissLingeringConfirmDialog(callId, dismissText)) {
+                        clickableTabNode = waitForClickableNodeByText(tabText)
+                        tabClicked = clickableTabNode != null && clickSelfOrClickableAncestor(clickableTabNode)
+                    }
+                }
+                if (!tabClicked) {
                     val visible = dumpVisibleNodeInfo(rootInActiveWindow)
                     RemoteFlowLogger.w(TAG, "call_id=$callId 4단계 실패 시점 화면 요소(최대 ${DUMP_NODE_LIMIT}개): ${if (visible.isEmpty()) "(없음 - rootInActiveWindow=${rootInActiveWindow})" else visible.joinToString(" | ")}")
                     fail(callId, dryRun, 4, totalSteps, "\"$tabText\" 탭 클릭 실패(클릭 가능한 노드 없음)")
@@ -355,6 +378,26 @@ class PartnersAutoParticipateService : AccessibilityService() {
             delay(POLL_INTERVAL_MS)
         }
         return null
+    }
+
+    // 2026-11-09: 직전 콜의 "상담참여가 완료되었습니다" 확인 다이얼로그가 안 닫힌 채 남아
+    // 다음 콜의 견적입찰 탭 조작을 모달로 가로막는 문제(콜 1289 등 11/9 버스트 [4/8단계] 실패)
+    // 대응. 남은 확인 다이얼로그가 보이면 눌러 닫고, 닫은 뒤 또 다른 확인 다이얼로그가 이어
+    // 뜨는 경우까지 유한 횟수(최대 3회) 반복한다. 완료 다이얼로그는 이미 종결된 건(이전 콜)의
+    // 것이라 눌러도 안전하고, 없으면 아무 것도 하지 않는다(no-op). "확인" 텍스트가 정상 화면에
+    // 우연히 있을 수도 있으니 클릭이 실제로 수행된 경우에만 닫힌 것으로 간주한다.
+    private suspend fun dismissLingeringConfirmDialog(callId: Int, dismissText: String): Boolean {
+        var dismissedAny = false
+        repeat(3) {
+            val node = rootInActiveWindow
+                ?.findAccessibilityNodeInfosByText(dismissText)
+                ?.firstOrNull() ?: return dismissedAny
+            RemoteFlowLogger.w(TAG, "call_id=$callId 잔존 \"$dismissText\" 확인 다이얼로그 발견 - 닫고 재탐색")
+            if (!clickSelfOrClickableAncestor(node)) return dismissedAny
+            dismissedAny = true
+            delay(1000)
+        }
+        return dismissedAny
     }
 
     // 목록의 "첫 신규 항목"을 열기 위한 최선의 추정 - 정확한 뷰 구조를 이 환경에서 확인할 수

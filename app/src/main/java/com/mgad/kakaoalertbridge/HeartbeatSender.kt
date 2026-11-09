@@ -92,6 +92,12 @@ object HeartbeatSender {
                     put("auto_participate_dry_run", autoParticipateDryRun)
                     put("auto_participate_configured", autoParticipateConfigured)
                     put("accessibility_service_enabled", accessibilityServiceEnabled)
+                    // 2026-11-09: 실기기가 없어 "폰에 실제로 어떤 빌드가 깔려 있는지"를 확인할 수
+                    // 없던 문제(새 APK를 올려도 설치됐는지 로그로 확인 불가) - 빌드시 주입되는
+                    // 커밋 해시(BuildConfig.GIT_COMMIT_HASH)를 하트비트에 실어 관리자 화면에서
+                    // 설치된 버전을 바로 대조할 수 있게 한다. 백엔드가 모르는 필드면 그냥 무시된다.
+                    put("app_version", BuildConfig.GIT_COMMIT_HASH)
+                    put("app_build_timestamp", BuildConfig.BUILD_TIMESTAMP)
                 }
 
                 conn.outputStream.use { os ->

@@ -21,17 +21,28 @@ import java.net.URL
 object AutoParticipateResultSender {
     private const val TAG = "AutoParticipateResult"
     private const val SERVER_URL_BASE = "https://app.mgad.kr/api/calls"
-    // backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
-    private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+    // backend/.env의 BRIDGE_SECRET_KEY와 동일. 2026-11-18: 소스 평문 제거 - 빌드 시 secrets.properties
+    // 에서 주입된 BuildConfig.BRIDGE_SECRET 사용(값은 동일, 교체 아님).
+    private val BRIDGE_SECRET = BuildConfig.BRIDGE_SECRET
     private const val MAX_ATTEMPTS = 3
     private const val RETRY_DELAY_MS = 2000L
 
-    suspend fun send(callId: Int, success: Boolean, errorMessage: String?, dryRun: Boolean): Boolean =
+    suspend fun send(
+        callId: Int,
+        success: Boolean,
+        errorMessage: String?,
+        dryRun: Boolean,
+        partnerBlocked: Boolean = false,
+        misangdamCount: Int? = null,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             val payload = JSONObject().apply {
                 put("success", success)
                 put("dry_run", dryRun)
                 if (errorMessage != null) put("error_message", errorMessage)
+                // 간판의품격 참여제한이면 서버가 하루 1회 요약으로 처리하도록 명시 플래그 전송(A-2 연동).
+                if (partnerBlocked) put("partner_blocked", true)
+                if (misangdamCount != null) put("misangdam_count", misangdamCount)
             }
 
             for (attempt in 1..MAX_ATTEMPTS) {

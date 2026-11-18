@@ -73,6 +73,18 @@
                 android:value="카카오톡 콜 알림 감지 브릿지 - 새 견적 요청 알림을 놓치지 않기 위해 지속 실행" />
         </service>
 
+        <!-- 2026-11-18(item 1): 재부팅/앱 교체 후 알림 리스너 재바인드 요청용 리시버.
+             RECEIVE_BOOT_COMPLETED 권한은 이미 선언돼 있으나 이를 받을 리시버가 없었다. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 하트비트 이중 안전장치: 서버의 무음 웨이크 핑을 받아 즉시 하트비트를 재전송 -->
         <service
             android:name=".FcmMessagingService"

@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -37,7 +38,7 @@ class KakaoNotificationListenerService : NotificationListenerService() {
         // 서버의 /calls/receive, /calls/heartbeat 스팸성 데이터 주입 방지용 시크릿.
         // 서버는 소프트 롤아웃 중이라 이 헤더가 없어도 일단 통과되지만(2026-08-07 기준
         // 구버전 앱 호환), 값이 있는데 틀리면 거부한다. backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
-        private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+        private val BRIDGE_SECRET = BuildConfig.BRIDGE_SECRET
 
         private const val FOREGROUND_CHANNEL_ID = "bridge_running"
         private const val FOREGROUND_NOTIFICATION_ID = 1001
@@ -300,8 +301,15 @@ class KakaoNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        Log.d(TAG, "알림 리스너 연결 끊김")
+        Log.d(TAG, "알림 리스너 연결 끊김 - 재바인드 요청")
         heartbeatJob?.cancel()
         sendHeartbeat(listenerConnected = false)
+        // 2026-11-18(item 1): 리스너가 끊기면 스스로 다시 붙게 요청한다. 알림 접근 권한이 유지돼
+        // 있으면 시스템이 재바인드하며 onListenerConnected가 다시 불려 하트비트 루프가 복구된다.
+        try {
+            requestRebind(ComponentName(this, KakaoNotificationListenerService::class.java))
+        } catch (t: Throwable) {
+            Log.e(TAG, "재바인드 요청 실패", t)
+        }
     }
 }

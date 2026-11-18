@@ -14,7 +14,7 @@ object RemoteLogSender {
     private const val TAG = "RemoteLogSender"
     private const val URL_STR = "https://app.mgad.kr/api/calls/auto-participate-flow-log"
     // backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
-    private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+    private val BRIDGE_SECRET = BuildConfig.BRIDGE_SECRET
     private const val MAX_ATTEMPTS = 2
     private const val RETRY_DELAY_MS = 1500L
     // 서버 MAX_FLOW_LOG_CHARS(calls.py)와 동일 - 초과분은 서버에서도 뒤쪽(최신)만 남기지만,

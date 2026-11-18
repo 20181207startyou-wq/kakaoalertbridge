@@ -18,7 +18,7 @@ object HeartbeatSender {
     private const val TAG = "HeartbeatSender"
     private const val HEARTBEAT_URL = "https://app.mgad.kr/api/calls/heartbeat"
     // backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함.
-    private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+    private val BRIDGE_SECRET = BuildConfig.BRIDGE_SECRET
 
     private val scope = CoroutineScope(Dispatchers.IO)
 

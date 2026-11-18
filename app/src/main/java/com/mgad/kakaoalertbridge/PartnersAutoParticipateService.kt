@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.mgad.kakaoalertbridge.AutoParticipateRetryTracker.Outcome
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -37,7 +38,13 @@ class PartnersAutoParticipateService : AccessibilityService() {
         private const val DUMP_NODE_LIMIT = 40
 
         private var instance: WeakReference<PartnersAutoParticipateService>? = null
-        private val processedCallIds = mutableSetOf<Int>()
+
+        // 2026-11-18: 성공/실패를 구분하지 않고 한 번 시도하면 영원히 스킵하던 버그 수정.
+        // 재시도/완료 상태는 AutoParticipateRetryTracker가 관리한다 - 성공·참여제한(BLOCKED)은
+        // 완료, 실패는 최대 3회·각 시도 사이 최소 5분 간격으로 재시도. appContext는 지연 재시도
+        // 예약(쿨다운 뒤 재큐잉)에 쓴다.
+        private val retryTracker = AutoParticipateRetryTracker()
+        private var appContext: Context? = null
 
         // 접근성 서비스는 한 번에 화면 하나만 조작할 수 있다. 카카오톡이 미읽음 알림을
         // 이어붙여 보내면 한 알림에 여러 고객의 리마인더가 묶여 오는 게 흔해(김정은님 건
@@ -55,6 +62,7 @@ class PartnersAutoParticipateService : AccessibilityService() {
         // 토글이 각각 독립적이라, 어느 쪽 창(window)인지에 맞는 토글로 활성 여부를 판단한다.
         fun trigger(context: android.content.Context, callIds: List<Int>, businessHours: Boolean = false) {
             if (callIds.isEmpty()) return
+            appContext = context.applicationContext
             val enabledForThisWindow = if (businessHours) {
                 AutoParticipateSettings.isBusinessHoursEnabled(context)
             } else {
@@ -69,15 +77,15 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 return
             }
 
-            val newIds = synchronized(processedCallIds) {
-                callIds.filter { processedCallIds.add(it) }
-            }
-            if (newIds.isEmpty()) {
-                Log.d(TAG, "이미 처리(시도)된 call_ids=$callIds - 중복 트리거 스킵")
+            // 완료(성공/참여제한)·진행중·쿨다운 미경과·최대시도 초과 건은 제외하고, 시도 가능한 것만
+            // inFlight로 잡아 큐에 넣는다(기존: 성공·실패 무관 Set add로 영구 스킵이던 버그 대체).
+            val admitted = retryTracker.admit(callIds, SystemClock.elapsedRealtime())
+            if (admitted.isEmpty()) {
+                Log.d(TAG, "시도 불가(완료/진행중/재시도대기) call_ids=$callIds - 스킵")
                 return
             }
 
-            synchronized(pendingQueue) { pendingQueue.addAll(newIds) }
+            synchronized(pendingQueue) { pendingQueue.addAll(admitted) }
             processNextIfIdle(context)
         }
 
@@ -88,20 +96,41 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 nextId = pendingQueue.removeFirstOrNull() ?: return
                 isProcessing = true
             }
+            appContext = context.applicationContext
             val dryRun = AutoParticipateSettings.isDryRun(context)
+            retryTracker.onStarted(nextId, SystemClock.elapsedRealtime())
             val svc = instance?.get()
             if (svc == null) {
                 Log.w(TAG, "접근성 서비스 비활성(설정에서 켜지지 않음) - 자동참여 스킵(call_id=$nextId)")
                 companionScope.launch {
                     AutoParticipateResultSender.send(nextId, success = false, errorMessage = "접근성 서비스가 켜져있지 않음", dryRun = dryRun)
                 }
-                synchronized(pendingQueue) { isProcessing = false }
-                processNextIfIdle(context)
+                finishAttempt(nextId, Outcome.FAILED, context)
                 return
             }
-            svc.runParticipateFlow(nextId, dryRun) {
-                synchronized(pendingQueue) { isProcessing = false }
-                processNextIfIdle(context)
+            svc.runParticipateFlow(nextId, dryRun) { outcome ->
+                finishAttempt(nextId, outcome, context)
+            }
+        }
+
+        // 한 시도가 끝나면: 큐 처리 플래그를 풀고 다음 항목을 처리한다. 결과가 실패이고 재시도 여지가
+        // 있으면(최대 미만) 쿨다운(5분) 뒤 같은 call_id를 다시 큐에 넣는다 - 서버 재트리거에 의존하지
+        // 않고 앱이 정해진 횟수/간격으로 스스로 재시도한다.
+        private fun finishAttempt(callId: Int, outcome: Outcome, context: android.content.Context) {
+            val retriable = retryTracker.onFinished(callId, outcome)
+            synchronized(pendingQueue) { isProcessing = false }
+            processNextIfIdle(context)
+            if (retriable) {
+                val ctx = context.applicationContext
+                companionScope.launch {
+                    delay(retryTracker.cooldownMs)
+                    val admitted = retryTracker.admit(listOf(callId), SystemClock.elapsedRealtime())
+                    if (admitted.isNotEmpty()) {
+                        Log.d(TAG, "자동참여 재시도(call_id=$callId, 다음 시도=${retryTracker.attemptsOf(callId) + 1}/${retryTracker.maxAttempts})")
+                        synchronized(pendingQueue) { pendingQueue.addAll(admitted) }
+                        processNextIfIdle(ctx)
+                    }
+                }
             }
         }
     }
@@ -127,13 +156,13 @@ class PartnersAutoParticipateService : AccessibilityService() {
         Log.w(TAG, "접근성 서비스 인터럽트")
     }
 
-    private fun runParticipateFlow(callId: Int, dryRun: Boolean, onComplete: () -> Unit) {
+    private fun runParticipateFlow(callId: Int, dryRun: Boolean, onComplete: (Outcome) -> Unit) {
         scope.launch {
             // 2026-09-16: 이 플로우(계측 대상: 여기부터 finally에서 RemoteLogSender.send()까지)
             // 동안의 모든 RemoteFlowLogger.d/w/e 호출을 한 세션으로 모은다 - 큐가 한 번에
             // 한 콜만 처리하므로 start()~snapshot() 사이 다른 플로우 로그가 섞일 일은 없다.
             RemoteFlowLogger.start()
-            var succeeded = false
+            var outcome = Outcome.FAILED
             val packageName = AutoParticipateSettings.getPartnersPackageName(applicationContext)
             val tabText = AutoParticipateSettings.getTabButtonText(applicationContext)
             val participateText = AutoParticipateSettings.getParticipateButtonText(applicationContext)
@@ -190,9 +219,19 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 }
 
                 if (!waitForPackageForeground(callId, flowStartElapsedMs, packageName)) {
-                    RemoteFlowLogger.w(TAG, "call_id=$callId 2단계 최종 실패 - 총 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, 종료 시점 isInteractive=${powerManager.isInteractive}, 최종 rootInActiveWindow.packageName=${rootInActiveWindow?.packageName}")
-                    fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
-                    return@launch
+                    // 2026-11-18(item 5): 대기 시간만 늘리지 않고, 전면 전환 실패 시 WakeAndLaunchActivity를
+                    // 1회 재실행한 뒤 한 번 더 대기한다(런치 인텐트가 잠금화면/레이스로 한 번 묻힌 경우 복구).
+                    RemoteFlowLogger.w(TAG, "call_id=$callId 2단계 1차 실패 - WakeAndLaunchActivity 재실행 후 재대기(경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, rootInActiveWindow=${rootInActiveWindow?.packageName})")
+                    try {
+                        startActivity(wakeIntent)
+                    } catch (t: Throwable) {
+                        RemoteFlowLogger.e(TAG, "call_id=$callId 2단계 재실행 중 예외", t)
+                    }
+                    if (!waitForPackageForeground(callId, flowStartElapsedMs, packageName)) {
+                        RemoteFlowLogger.w(TAG, "call_id=$callId 2단계 최종 실패 - 총 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms, 종료 시점 isInteractive=${powerManager.isInteractive}, 최종 rootInActiveWindow.packageName=${rootInActiveWindow?.packageName}")
+                        fail(callId, dryRun, 2, totalSteps, "파트너스 앱 전면 전환 대기 시간 초과")
+                        return@launch
+                    }
                 }
                 RemoteFlowLogger.d(TAG, "call_id=$callId 2단계 통과 - 경과=${SystemClock.elapsedRealtime() - flowStartElapsedMs}ms")
 
@@ -271,27 +310,58 @@ class PartnersAutoParticipateService : AccessibilityService() {
 
                 delay(1500)
 
-                val itemNode = waitForFirstClickableExcluding(setOf(tabText))
-                    ?: run { fail(callId, dryRun, 5, totalSteps, "견적입찰 목록에서 열 항목을 찾지 못함"); return@launch }
-                if (!clickSelfOrClickableAncestor(itemNode)) {
+                // 5단계: 목록 항목 열기. 2026-11-18(item 2): 잔존 확인 다이얼로그 가드를 5~8단계로 확장한다
+                // (기존엔 3~4단계만). 못 찾으면 닫고 1회 재탐색, 그래도 없으면 참여제한 팝업인지 확인.
+                var itemNode = waitForFirstClickableExcluding(setOf(tabText))
+                if (itemNode == null && dismissLingeringConfirmDialog(callId, dismissText)) {
+                    itemNode = waitForFirstClickableExcluding(setOf(tabText))
+                }
+                if (itemNode == null) {
+                    if (checkPartnerBlock(callId, dryRun, dismissText)) { outcome = Outcome.BLOCKED; return@launch }
+                    fail(callId, dryRun, 5, totalSteps, "견적입찰 목록에서 열 항목을 찾지 못함")
+                    return@launch
+                }
+                var itemClicked = clickSelfOrClickableAncestor(itemNode)
+                if (!itemClicked && dismissLingeringConfirmDialog(callId, dismissText)) {
+                    itemNode = waitForFirstClickableExcluding(setOf(tabText))
+                    itemClicked = itemNode != null && clickSelfOrClickableAncestor(itemNode)
+                }
+                if (!itemClicked) {
                     fail(callId, dryRun, 6, totalSteps, "목록 항목 클릭 실패(클릭 가능한 노드 없음)")
                     return@launch
                 }
 
-                val participateNode = waitForNodeByText(participateText)
-                    ?: run { fail(callId, dryRun, 7, totalSteps, "\"$participateText\" 버튼을 찾지 못함"); return@launch }
+                // 7단계: "상담참여" 버튼. 없으면 먼저 참여제한 팝업인지 확인하고(맞으면 BLOCKED 보고 후 종료),
+                // 아니면 잔존 다이얼로그를 닫고 재탐색.
+                var participateNode = waitForNodeByText(participateText)
+                if (participateNode == null) {
+                    if (checkPartnerBlock(callId, dryRun, dismissText)) { outcome = Outcome.BLOCKED; return@launch }
+                    if (dismissLingeringConfirmDialog(callId, dismissText)) {
+                        participateNode = waitForNodeByText(participateText)
+                    }
+                }
+                if (participateNode == null) {
+                    fail(callId, dryRun, 7, totalSteps, "\"$participateText\" 버튼을 찾지 못함")
+                    return@launch
+                }
 
                 if (dryRun) {
                     RemoteFlowLogger.d(TAG, "[드라이런] call_id=$callId \"$participateText\" 버튼 발견(8/$totalSteps 단계 진입 성공) - 실제 클릭 안 함")
-                    succeeded = true
+                    outcome = Outcome.SUCCESS
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = true)
                 } else {
-                    if (!clickSelfOrClickableAncestor(participateNode)) {
+                    // 8단계: 클릭. 실패 시 잔존 다이얼로그 닫고 1회 재탐색/재클릭(가드 확장).
+                    var clicked = clickSelfOrClickableAncestor(participateNode)
+                    if (!clicked && dismissLingeringConfirmDialog(callId, dismissText)) {
+                        participateNode = waitForNodeByText(participateText)
+                        clicked = participateNode != null && clickSelfOrClickableAncestor(participateNode)
+                    }
+                    if (!clicked) {
                         fail(callId, dryRun, 8, totalSteps, "\"$participateText\" 버튼 클릭 실패(클릭 가능한 노드 없음)")
                         return@launch
                     }
                     RemoteFlowLogger.d(TAG, "call_id=$callId \"$participateText\" 클릭 완료(8/$totalSteps 단계 전부 성공)")
-                    succeeded = true
+                    outcome = Outcome.SUCCESS
                     AutoParticipateResultSender.send(callId, success = true, errorMessage = null, dryRun = false)
                 }
             } catch (e: Exception) {
@@ -303,9 +373,9 @@ class PartnersAutoParticipateService : AccessibilityService() {
                 // 문제 - 플로우가 끝나면(성공/실패 무관) 여기까지 쌓인 로그를 통째로 서버에
                 // 올려 관리자 화면(설정 페이지)에서 USB 없이 바로 확인할 수 있게 한다.
                 val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-                RemoteLogSender.send(callId, deviceId, succeeded, RemoteFlowLogger.snapshot())
+                RemoteLogSender.send(callId, deviceId, outcome == Outcome.SUCCESS, RemoteFlowLogger.snapshot())
                 performGlobalAction(GLOBAL_ACTION_HOME)
-                onComplete()
+                onComplete(outcome)
             }
         }
     }
@@ -449,6 +519,36 @@ class PartnersAutoParticipateService : AccessibilityService() {
         }
         walk(node)
         return result
+    }
+
+    // 2026-11-18(item 4): 간판의품격 "미상담 참여제한" 팝업을 감지하면 partner_blocked=true로 보고하고
+    // 팝업을 닫는다. 기계적 실패가 아니라 사람이 미상담을 처리해야 풀리는 상태라 재시도하지 않는다(BLOCKED).
+    private suspend fun checkPartnerBlock(callId: Int, dryRun: Boolean, dismissText: String): Boolean {
+        val r = PartnerBlockDetector.detect(collectVisibleTexts(rootInActiveWindow))
+        if (!r.blocked) return false
+        RemoteFlowLogger.w(TAG, "call_id=$callId 간판의품격 참여제한 감지(미상담=${r.misangdamCount}) - BLOCKED 보고 후 팝업 닫기")
+        AutoParticipateResultSender.send(
+            callId, success = false, errorMessage = PartnerBlockDetector.errorMessage(r.misangdamCount),
+            dryRun = dryRun, partnerBlocked = true, misangdamCount = r.misangdamCount,
+        )
+        dismissLingeringConfirmDialog(callId, dismissText)
+        return true
+    }
+
+    // 화면의 모든 노드에서 text/contentDescription 원문을 모은다(참여제한 텍스트/미상담 개수 판정용).
+    private fun collectVisibleTexts(node: AccessibilityNodeInfo?, limit: Int = DUMP_NODE_LIMIT): List<String> {
+        val out = mutableListOf<String>()
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null || out.size >= limit) return
+            n.text?.toString()?.let { if (it.isNotBlank()) out.add(it) }
+            n.contentDescription?.toString()?.let { if (it.isNotBlank()) out.add(it) }
+            for (i in 0 until n.childCount) {
+                if (out.size >= limit) return
+                walk(n.getChild(i))
+            }
+        }
+        walk(node)
+        return out
     }
 
     private fun clickSelfOrClickableAncestor(node: AccessibilityNodeInfo): Boolean {

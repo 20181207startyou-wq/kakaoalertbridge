@@ -29,7 +29,7 @@ object UpdateChecker {
     private const val TAG = "UpdateChecker"
     private const val VERSION_URL = "https://app.mgad.kr/api/calls/app-latest-version"
     // backend/.env의 BRIDGE_SECRET_KEY와 동일해야 함(HeartbeatSender/KakaoNotificationListenerService와 동일 값).
-    private const val BRIDGE_SECRET = "31b0cce65959eafe3af0fe13de8ea986e2a6bbdc12e66f71"
+    private val BRIDGE_SECRET = BuildConfig.BRIDGE_SECRET
 
     private const val PREFS_NAME = "update_checker"
     private const val KEY_LAST_CHECK_MS = "last_check_ms"
